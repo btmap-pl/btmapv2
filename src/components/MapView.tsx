@@ -38,7 +38,7 @@ import type { BasemapId } from '../lib/basemaps';
 import 'leaflet/dist/leaflet.css';
 import type { Bounds, Radioline, RadiolineChannel, Theme, Tower } from '../types';
 import { operatorColor, readStored, saveStored } from '../lib/constants';
-import { MAP_STATION_LIMIT } from '../../shared/mapLimits';
+import { MAP_STATION_LIMIT, MAP_RADIOLINE_LIMIT } from '../../shared/mapLimits';
 import PemPlanMarkers from './PemPlanMarkers';
 import type { PemPlan } from '../../shared/pemPlans';
 import { operatorName } from '../../shared/operators';
@@ -219,38 +219,14 @@ function Stations({
     <>
       {items.map(t => (
         <Fragment key={t.id}>
-          {t.isNew && (
-            <CircleMarker
-              center={[t.lat, t.lng]}
-              radius={(selected === t.id ? 17 : 13) * sizeMultiplier}
-              renderer={renderer}
-              pathOptions={{
-                color: '#10b981',
-                weight: 2.2,
-                opacity: 0.9,
-                fillColor: '#10b981',
-                fillOpacity: 0.25,
-                dashArray: '3, 4',
-              }}
-              interactive={false}
-            />
-          )}
           <CircleMarker
             center={[t.lat, t.lng]}
-            radius={(selected === t.id ? 11 : t.source === 'BTMAP' ? 8 : (t.operators.length > 1 ? 7 : 6)) * sizeMultiplier}
+            radius={(selected === t.id ? 12 : (t.operators.length > 1 ? 8.5 : 7.5)) * sizeMultiplier}
             renderer={renderer}
             pathOptions={{
-              color:
-                selected === t.id && theme === 'light'
-                  ? '#086c60'
-                  : t.source === 'BTMAP'
-                  ? '#00e5ff'
-                  : theme === 'light' && operatorName(t.operators[0]?.name || '') === 'Plus'
-                  ? '#244230'
-                  : highContrast
-                  ? '#ffffff'
-                  : '#fff',
-              weight: (selected === t.id ? 4 : t.source === 'BTMAP' ? 3 : 2) + (highContrast ? 1.5 : 0),
+              stroke: Boolean(selected === t.id || highContrast),
+              color: selected === t.id ? (theme === 'light' ? '#086c60' : '#ffffff') : '#ffffff',
+              weight: selected === t.id ? 3.5 : (highContrast ? 1.5 : 0),
               fillColor: operatorColor(t.operators[0]?.name),
               fillOpacity: 1,
             }}
@@ -281,7 +257,7 @@ function Stations({
           {t.operators.length > 1 && (
             <CircleMarker
               center={[t.lat, t.lng]}
-              radius={2.5 * sizeMultiplier}
+              radius={3 * sizeMultiplier}
               renderer={renderer}
               pathOptions={{ weight: 0, fillColor: '#fff', fillOpacity: 1 }}
               interactive={false}
@@ -337,6 +313,7 @@ export interface HighlightedSector {
   sectorNum?: number;
   cellId?: number;
   eci?: number;
+  nci?: number;
   label?: string;
 }
 
@@ -409,10 +386,33 @@ function AzimuthBeams({
   // Scaled cone radius in meters:
   const lengthMul = settings?.azimuthLength === 'short' ? 0.75 : settings?.azimuthLength === 'long' ? 1.45 : 1.0;
   const radiusM = (zoom >= 17 ? 110 : zoom >= 16 ? 130 : zoom >= 15 ? 150 : 180) * lengthMul;
-  const beamwidthDeg = 44;
+  // Drawing width of a sector. Registries give directions, not beam widths, so this is only how a direction is shown.
+  const beamwidthDeg = 30;
 
-  const fillOpacity = settings?.azimuthOpacity ? settings.azimuthOpacity * 0.55 : 0.22;
-  const strokeOpacity = settings?.azimuthOpacity ? Math.min(1.0, settings.azimuthOpacity * 1.5) : 0.65;
+  const fillOpacity = settings?.azimuthOpacity ? settings.azimuthOpacity * 0.5 : 0.24;
+  const strokeOpacity = settings?.azimuthOpacity ? Math.min(1.0, settings.azimuthOpacity * 1.4) : 0.8;
+
+  /** Directions closer than this share one label, so neighbouring sectors do not stack their numbers. */
+  const LABEL_MERGE_DEG = 25;
+  const labelGroups = (azs: number[]) => {
+    const sorted = [...new Set(azs)].sort((a, b) => a - b);
+    const groups: number[][] = [];
+    for (const az of sorted) {
+      const last = groups[groups.length - 1];
+      if (last && az - last[last.length - 1] < LABEL_MERGE_DEG) last.push(az);
+      else groups.push([az]);
+    }
+    // Wrap around north: 350° and 10° are neighbours.
+    if (groups.length > 1 && groups[0][0] + 360 - groups[groups.length - 1].slice(-1)[0] < LABEL_MERGE_DEG) {
+      groups[0] = [...groups.pop()!, ...groups[0]];
+    }
+    return groups;
+  };
+  const meanAngle = (angles: number[]) => {
+    const s = angles.reduce((acc, a) => acc + Math.sin((a * Math.PI) / 180), 0);
+    const c = angles.reduce((acc, a) => acc + Math.cos((a * Math.PI) / 180), 0);
+    return ((Math.atan2(s, c) * 180) / Math.PI + 360) % 360;
+  };
 
   return (
     <>
@@ -422,86 +422,51 @@ function AzimuthBeams({
         const azs = isHlTower && highlightedSector && !rawAzs.includes(highlightedSector.azimuth)
           ? [...rawAzs, highlightedSector.azimuth].sort((a, b) => a - b)
           : rawAzs;
-        const opColor = operatorColor(t.operators[0]?.name) || '#f59e0b';
+        const opColor = operatorColor(t.operators[0]?.name) || '#788992';
         const latRad = (t.lat * Math.PI) / 180;
+        const hlAz = isHlTower && highlightedSector ? highlightedSector.azimuth : null;
+        const offset = (az: number, distM: number): [number, number] => [
+          t.lat + (distM * Math.cos((az * Math.PI) / 180)) / 111320,
+          t.lng + (distM * Math.sin((az * Math.PI) / 180)) / (111320 * Math.cos(latRad)),
+        ];
 
         return (
           <Fragment key={`az-group-${t.id}`}>
-            {/* Sector Cones / Wedges */}
+            {/* Sectors in the operator's colour; the highlighted one is filled more and outlined in white */}
             {azs.map(az => {
-              const isTargetSector = Boolean(isHlTower && highlightedSector && highlightedSector.azimuth === az);
-              const poly = sectorPolygon(
-                t.lat,
-                t.lng,
-                az,
-                isTargetSector ? radiusM * 1.3 : radiusM,
-                isTargetSector ? 50 : beamwidthDeg
-              );
+              const isTarget = hlAz === az;
               return (
                 <Polygon
                   key={`poly-${t.id}-${az}`}
-                  positions={poly}
+                  positions={sectorPolygon(t.lat, t.lng, az, isTarget ? radiusM * 1.15 : radiusM, beamwidthDeg)}
                   renderer={renderer}
                   pathOptions={{
-                    color: isTargetSector ? '#00e5ff' : opColor,
-                    weight: isTargetSector ? 3.5 : 1.5,
-                    opacity: isTargetSector ? 1.0 : strokeOpacity,
-                    fillColor: isTargetSector ? '#00e5ff' : opColor,
-                    fillOpacity: isTargetSector ? 0.65 : fillOpacity,
+                    color: isTarget ? '#ffffff' : opColor,
+                    weight: isTarget ? 2 : 1.2,
+                    opacity: isTarget ? 0.95 : strokeOpacity,
+                    fillColor: opColor,
+                    fillOpacity: isTarget ? Math.min(0.75, fillOpacity * 2.4) : fillOpacity,
+                    lineJoin: 'round',
                   }}
                   interactive={false}
                 />
               );
             })}
 
-            {/* Subtle centerline ray inside each sector cone */}
-            {azs.map(az => {
-              const isTargetSector = Boolean(isHlTower && highlightedSector && highlightedSector.azimuth === az);
-              const rayLen = isTargetSector ? radiusM * 1.35 : radiusM;
-              const rayEnd: [number, number] = [
-                t.lat + (rayLen * Math.cos((az * Math.PI) / 180)) / 111320,
-                t.lng + (rayLen * Math.sin((az * Math.PI) / 180)) / (111320 * Math.cos(latRad)),
-              ];
-              return (
-                <Polyline
-                  key={`ray-${t.id}-${az}`}
-                  positions={[[t.lat, t.lng], rayEnd]}
-                  renderer={renderer}
-                  pathOptions={{
-                    color: isTargetSector ? '#ffffff' : opColor,
-                    weight: isTargetSector ? 2.8 : 1.2,
-                    opacity: isTargetSector ? 1.0 : strokeOpacity * 0.7,
-                  }}
-                  interactive={false}
-                />
-              );
-            })}
-
-            {/* Azimuth Degree Labels centered INSIDE each sector cone */}
-            {azs.map(az => {
-              const isTargetSector = Boolean(isHlTower && highlightedSector && highlightedSector.azimuth === az);
-              const labelDistM = (isTargetSector ? radiusM * 1.3 : radiusM) * 0.60;
-              const dLat = (labelDistM * Math.cos((az * Math.PI) / 180)) / 111320;
-              const dLng = (labelDistM * Math.sin((az * Math.PI) / 180)) / (111320 * Math.cos(latRad));
-              const labelPos: [number, number] = [t.lat + dLat, t.lng + dLng];
-
+            {/* Degree labels just past the arc, one per group of close directions */}
+            {labelGroups(azs).map(group => {
+              const containsTarget = hlAz !== null && group.includes(hlAz);
+              const text = containsTarget && highlightedSector
+                ? `${highlightedSector.sectorNum ? `S${highlightedSector.sectorNum} · ` : ''}${group.map(a => `${a}°`).join(' · ')}`
+                : group.map(a => `${a}°`).join(' · ');
+              const pos = offset(meanAngle(group), (containsTarget ? radiusM * 1.15 : radiusM) * 1.18);
               const icon = L.divIcon({
-                className: `az-beam-label ${isTargetSector ? 'is-target' : ''}`,
-                html: isTargetSector && highlightedSector
-                  ? `<span>🎯 ${highlightedSector.sectorNum ? `Sektor ${highlightedSector.sectorNum} · ` : ''}${az}°</span>`
-                  : `<span>${az}°</span>`,
-                iconSize: isTargetSector ? [120, 24] : [44, 18],
-                iconAnchor: isTargetSector ? [60, 12] : [22, 9],
+                className: `az-beam-label ${containsTarget ? 'is-target' : ''}`,
+                html: `<span>${text}</span>`,
+                iconSize: [0, 0],
+                iconAnchor: [0, 0],
               });
-
-              return (
-                <Marker
-                  key={`lbl-${t.id}-${az}`}
-                  position={labelPos}
-                  icon={icon}
-                  interactive={false}
-                />
-              );
+              return <Marker key={`lbl-${t.id}-${group.join('-')}`} position={pos} icon={icon} interactive={false} />;
             })}
           </Fragment>
         );
@@ -709,8 +674,11 @@ function parseRadiolineChannels(line: Radioline): RadiolineChannel[] {
       // Fallback below
     }
   }
-  const freqGHz = Number(((line.frequency || 15000) / 1000).toFixed(1));
-  return [{ dir: 'A → B', freqGHz, pol: 'H', mbps: 150 }];
+  // No channel list in the registry row: one entry with only what the row itself states.
+  // Unknown values stay empty (0 / '') and are shown as "no data", never as typical figures.
+  const stored = Number(line.frequency) || 0;
+  const freqGHz = Number((stored > 1000 ? stored / 1000 : stored).toFixed(1));
+  return [{ dir: 'A → B', freqGHz, pol: '', mbps: 0 }];
 }
 
 function RadiolineDetailsDialog({
@@ -738,8 +706,8 @@ function RadiolineDetailsDialog({
 
   const brand = getRadiolineBrand(line);
   const distanceKm = line.distanceKm ?? computeHaversineKm(line.latA, line.lngA, line.latB, line.lngB);
-  const mode = line.mode || '1+0';
-  const capacityText = line.capacityText || '150 Mbps';
+  const mode = line.mode || '—';
+  const capacityText = line.capacityText || 'brak danych';
   const ch = channels[activeIdx] || channels[0];
 
   const isAB = ch?.dir !== 'B → A';
@@ -908,7 +876,7 @@ function RadiolineDetailsDialog({
                   <Gauge size={14} /> Szybkość transmisji
                 </span>
                 <strong className="rl-param-value">
-                  {ch?.mbps != null ? `${ch.mbps} Mbps` : 'Brak danych'}
+                  {ch?.mbps ? `${ch.mbps} Mbps` : 'Brak danych'}
                 </strong>
               </div>
             </div>
@@ -1115,38 +1083,40 @@ function RadiolineDetailsDialog({
   );
 }
 
-function RadiolineCard({
+/** Same path: both ends within this distance, in either direction. */
+const SAME_PATH_KM = 0.025;
+
+/** All links that run along the same path as `line` (the same two ends), the clicked one first. */
+function linksOnSamePath(line: Radioline, all: Radioline[]): Radioline[] {
+  const near = (latA: number, lngA: number, latB: number, lngB: number) => computeHaversineKm(latA, lngA, latB, lngB) <= SAME_PATH_KM;
+  const same = all.filter(other =>
+    other.id === line.id ||
+    (near(line.latA, line.lngA, other.latA, other.lngA) && near(line.latB, line.lngB, other.latB, other.lngB)) ||
+    (near(line.latA, line.lngA, other.latB, other.lngB) && near(line.latB, line.lngB, other.latA, other.lngA)),
+  );
+  const topFreq = (l: Radioline) => Math.max(0, ...parseRadiolineChannels(l).map(ch => ch.freqGHz || 0), l.frequency || 0);
+  return same.sort((a, b) => (a.id === line.id ? -1 : b.id === line.id ? 1 : topFreq(b) - topFreq(a)));
+}
+
+/** One link inside the popup: operator, permit, length, mode, capacity and its channels. */
+function RadiolineItem({
   line,
   onClose,
   onOpenDetails,
 }: {
   line: Radioline;
-  onClose: () => void;
+  onClose?: () => void;
   onOpenDetails: (channelIdx?: number) => void;
 }) {
-  const [copiedCoords, setCopiedCoords] = useState(false);
-
   const brand = getRadiolineBrand(line);
   const distanceKm = line.distanceKm ?? computeHaversineKm(line.latA, line.lngA, line.latB, line.lngB);
-  const mode = line.mode || '1+0';
-  const capacityText = line.capacityText || '150 Mbps';
-
+  const mode = line.mode || '—';
+  const capacityText = line.capacityText || 'brak danych';
   const channels = useMemo(() => parseRadiolineChannels(line), [line]);
 
-  const midLat = ((line.latA + line.latB) / 2).toFixed(5);
-  const midLng = ((line.lngA + line.lngB) / 2).toFixed(5);
-  const coordsStr = `${midLat}, ${midLng}`;
-
-  const handleCopyCoords = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard?.writeText(coordsStr);
-    setCopiedCoords(true);
-    setTimeout(() => setCopiedCoords(false), 1600);
-  };
-
   return (
-    <div
-      className="rl-popup-card is-clickable"
+    <section
+      className="rl-popup-item"
       onClick={e => {
         e.stopPropagation();
         onOpenDetails(0);
@@ -1159,24 +1129,22 @@ function RadiolineCard({
           <div className="rl-popup-title-group">
             <span className="rl-op-name">{brand.displayName}</span>
             {line.permitId && <span className="rl-permit-id">{line.permitId}</span>}
-            {line.isNew === 1 && (
-              <span style={{ background: '#059669', color: '#fff', padding: '1px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 700, marginLeft: '6px' }}>
-                ★ NOWA
-              </span>
-            )}
+            {line.isNew === 1 && <span className="rl-new-badge">★ NOWA</span>}
           </div>
         </div>
-        <button
-          type="button"
-          className="rl-icon-btn rl-close-btn"
-          onClick={e => {
-            e.stopPropagation();
-            onClose();
-          }}
-          title="Zamknij"
-        >
-          <X size={15} />
-        </button>
+        {onClose && (
+          <button
+            type="button"
+            className="rl-icon-btn rl-close-btn"
+            onClick={e => {
+              e.stopPropagation();
+              onClose();
+            }}
+            title="Zamknij"
+          >
+            <X size={15} />
+          </button>
+        )}
       </div>
 
       <div className="rl-popup-summary">
@@ -1202,26 +1170,65 @@ function RadiolineCard({
             <span className="rl-ch-dir">{ch.dir}</span>
             <span className="rl-ch-freq">{ch.freqGHz} GHz</span>
             <span className="rl-ch-pol">{ch.pol}</span>
-            <span className="rl-ch-speed">{ch.mbps} Mbps</span>
+            <span className="rl-ch-speed">{ch.mbps ? `${ch.mbps} Mbps` : 'brak danych'}</span>
           </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Popup for the clicked link and every other link on the same path, listed one under another. */
+function RadiolineCard({
+  lines,
+  onClose,
+  onOpenDetails,
+}: {
+  lines: Radioline[];
+  onClose: () => void;
+  onOpenDetails: (line: Radioline, channelIdx?: number) => void;
+}) {
+  const [copiedCoords, setCopiedCoords] = useState(false);
+  const first = lines[0];
+  const midLat = ((first.latA + first.latB) / 2).toFixed(5);
+  const midLng = ((first.lngA + first.lngB) / 2).toFixed(5);
+  const coordsStr = `${midLat}, ${midLng}`;
+
+  const handleCopyCoords = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard?.writeText(coordsStr);
+    setCopiedCoords(true);
+    setTimeout(() => setCopiedCoords(false), 1600);
+  };
+
+  return (
+    <div className="rl-popup-card">
+      <div className="rl-popup-items">
+        {lines.map((line, idx) => (
+          <RadiolineItem
+            key={line.id}
+            line={line}
+            onClose={idx === 0 ? onClose : undefined}
+            onOpenDetails={channelIdx => onOpenDetails(line, channelIdx)}
+          />
         ))}
       </div>
 
       <div
         className="rl-popup-footer"
         onClick={e => e.stopPropagation()}
-        title={line.stationA && line.stationB ? `A: ${line.stationA} ↔ B: ${line.stationB}` : undefined}
+        title={first.stationA && first.stationB ? `A: ${first.stationA} ↔ B: ${first.stationB}` : undefined}
       >
         <div className="rl-footer-coords">
           <MapPin size={13.5} className="rl-pin-icon" />
           <span>{coordsStr}</span>
+          {lines.length > 1 && (
+            <span className="rl-footer-count">
+              · {lines.length} {lines.length % 10 >= 2 && lines.length % 10 <= 4 && (lines.length % 100 < 12 || lines.length % 100 > 14) ? 'linie' : 'linii'} na tej trasie
+            </span>
+          )}
         </div>
-        <button
-          type="button"
-          className="rl-icon-btn rl-copy-coords-btn"
-          onClick={handleCopyCoords}
-          title="Skopiuj współrzędne"
-        >
+        <button type="button" className="rl-icon-btn rl-copy-coords-btn" onClick={handleCopyCoords} title="Skopiuj współrzędne">
           {copiedCoords ? <Check size={13.5} className="rl-copied-icon" /> : <Copy size={13.5} />}
         </button>
       </div>
@@ -1236,7 +1243,8 @@ function RadiolinesLayer({
   radiolines: Radioline[];
   renderer: L.Canvas;
 }) {
-  const [selectedRl, setSelectedRl] = useState<{ line: Radioline; pos: [number, number] } | null>(null);
+  const cappedRadiolines = useMemo(() => radiolines.slice(0, 1000), [radiolines]);
+  const [selectedRl, setSelectedRl] = useState<{ line: Radioline; lines: Radioline[]; pos: [number, number] } | null>(null);
   const [detailsModal, setDetailsModal] = useState<{ line: Radioline; channelIdx: number } | null>(null);
 
   useMapEvents({
@@ -1246,55 +1254,93 @@ function RadiolinesLayer({
   });
 
   useEffect(() => {
-    if (selectedRl && !radiolines.some(r => r.id === selectedRl.line.id)) {
+    if (selectedRl && !cappedRadiolines.some(r => r.id === selectedRl.line.id)) {
       setSelectedRl(null);
     }
-  }, [radiolines, selectedRl]);
+  }, [cappedRadiolines, selectedRl]);
 
   const selectedBrand = useMemo(
     () => (selectedRl ? getRadiolineBrand(selectedRl.line) : null),
     [selectedRl]
   );
 
+  const selectedColor = selectedRl
+    ? selectedRl.line.isNew === 1
+      ? '#10b981'
+      : selectedBrand?.color || '#3b82f6'
+    : '#3b82f6';
+
   const iconA = useMemo(
-    () => (selectedBrand ? createEndpointIcon('A', selectedBrand.color) : null),
-    [selectedBrand]
+    () => (selectedBrand ? createEndpointIcon('A', selectedColor) : null),
+    [selectedBrand, selectedColor]
   );
   const iconB = useMemo(
-    () => (selectedBrand ? createEndpointIcon('B', selectedBrand.color) : null),
-    [selectedBrand]
+    () => (selectedBrand ? createEndpointIcon('B', selectedColor) : null),
+    [selectedBrand, selectedColor]
   );
 
-  if (!radiolines.length && !detailsModal) return null;
+  if (!cappedRadiolines.length && !detailsModal) return null;
 
   return (
     <>
-      {radiolines.map(line => {
-        const isSelected = selectedRl?.line.id === line.id;
+      {/* Links are drawn under the station dots (see bringToBack): on the shared canvas the top layer takes the click. */}
+      {/* Modern rounded core lines */}
+      {cappedRadiolines.map(line => {
+        const isSelected = Boolean(selectedRl?.lines.some(l => l.id === line.id));
         const brand = getRadiolineBrand(line);
+        const color = line.isNew === 1 ? '#10b981' : brand.color;
         return (
           <Polyline
-            key={line.id}
+            key={`core-${line.id}`}
             positions={[
               [line.latA, line.lngA],
               [line.latB, line.lngB],
             ]}
             renderer={renderer}
             pathOptions={{
-              color: line.isNew === 1 ? '#00e5a3' : brand.color,
-              dashArray: line.isNew === 1 ? '7, 4' : undefined,
-              weight: isSelected ? 4.5 : line.isNew === 1 ? 3.4 : 2.3,
-              opacity: isSelected ? 1 : 0.9,
+              color,
+              dashArray: line.isNew === 1 ? '8, 6' : undefined,
+              weight: isSelected ? 5.0 : 3.2,
+              opacity: isSelected ? 1.0 : 0.85,
+              lineCap: 'round',
+              lineJoin: 'round',
             }}
             eventHandlers={{
+              add: e => (e.target as L.Path).bringToBack(),
               click: e => {
                 L.DomEvent.stopPropagation(e);
                 const clickedPos: [number, number] = e.latlng
                   ? [e.latlng.lat, e.latlng.lng]
                   : [(line.latA + line.latB) / 2, (line.lngA + line.lngB) / 2];
-                setSelectedRl({ line, pos: clickedPos });
+                setSelectedRl({ line, lines: linksOnSamePath(line, cappedRadiolines), pos: clickedPos });
               },
             }}
+          />
+        );
+      })}
+
+      {/* Sleek glowing halo underlayer for modern fiber/beam aesthetic */}
+      {cappedRadiolines.map(line => {
+        const isSelected = Boolean(selectedRl?.lines.some(l => l.id === line.id));
+        const brand = getRadiolineBrand(line);
+        const color = line.isNew === 1 ? '#10b981' : brand.color;
+        return (
+          <Polyline
+            key={`halo-${line.id}`}
+            positions={[
+              [line.latA, line.lngA],
+              [line.latB, line.lngB],
+            ]}
+            renderer={renderer}
+            pathOptions={{
+              color,
+              weight: isSelected ? 9.0 : 6.0,
+              opacity: isSelected ? 0.35 : 0.22,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }}
+            interactive={false}
+            eventHandlers={{ add: e => (e.target as L.Path).bringToBack() }}
           />
         );
       })}
@@ -1308,9 +1354,11 @@ function RadiolinesLayer({
             ]}
             renderer={renderer}
             pathOptions={{
-              color: selectedBrand.color,
-              weight: 8,
-              opacity: 0.28,
+              color: selectedColor,
+              weight: 10,
+              opacity: 0.38,
+              lineCap: 'round',
+              lineJoin: 'round',
             }}
             interactive={false}
           />
@@ -1335,11 +1383,9 @@ function RadiolinesLayer({
             }}
           >
             <RadiolineCard
-              line={selectedRl.line}
+              lines={selectedRl.lines}
               onClose={() => setSelectedRl(null)}
-              onOpenDetails={(channelIdx = 0) =>
-                setDetailsModal({ line: selectedRl.line, channelIdx })
-              }
+              onOpenDetails={(line, channelIdx = 0) => setDetailsModal({ line, channelIdx })}
             />
           </Popup>
         </>
@@ -1405,19 +1451,19 @@ export default function MapView({
   highlightedSector?: HighlightedSector | null;
   settings?: AppSettings;
 }) {
-  const markers = items.slice(0, MAP_STATION_LIMIT);
+  const markers = items.slice(0, 1000);
   const visible = useMemo(() => {
     let list = markers;
     if (selected && !list.some(t => t.id === selected.id)) {
-      list = [...list.slice(0, MAP_STATION_LIMIT - 1), selected];
+      list = [...list.slice(0, 999), selected];
     }
     if (highlightedSector && !list.some(t => t.id === highlightedSector.towerId)) {
       const hlTower = items.find(t => t.id === highlightedSector.towerId);
       if (hlTower) {
-        list = [hlTower, ...list];
+        list = [hlTower, ...list.slice(0, 999)];
       }
     }
-    return list;
+    return list.slice(0, 1000);
   }, [markers, selected, highlightedSector, items]);
 
   const canvasRenderer = useMemo(() => L.canvas({ padding: 0.5, tolerance: 8 }), []);
@@ -1479,6 +1525,9 @@ export default function MapView({
         renderer={canvasRenderer}
         settings={settings}
       />
+      {/* Radiolines under the stations: on a shared canvas the last drawn layer takes the click, and a
+          link ending at a mast would otherwise cover its station dot. */}
+      <RadiolinesLayer radiolines={radiolines.slice(0, 1000)} renderer={canvasRenderer} />
       <Stations
         items={visible}
         selected={selected?.id}
@@ -1492,9 +1541,6 @@ export default function MapView({
         settings={settings}
       />
       <PemPlanMarkers items={pemPlans} />
-
-      {/* Radiolines */}
-      <RadiolinesLayer radiolines={radiolines} renderer={canvasRenderer} />
 
       {/* User GPS location */}
       {position && (

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import {
@@ -27,6 +28,7 @@ import {
   Signal,
   Compass,
   RefreshCw,
+  HelpCircle,
 } from 'lucide-react';
 import type { Tower, TowerResult } from '../types';
 import { post, api } from '../lib/api';
@@ -58,13 +60,24 @@ const MAST_TYPES = [
   'Dach budynku',
   'Komin',
   'Wieża kościoła',
+  'Wieża ciśnień',
   'Silos / elewator',
+  'Obiekt przemysłowy',
   'Słup oświetleniowy / energetyczny',
   'Wewnątrz budynku',
   'Inny',
 ];
 
-const OWNERS = ['Nieznany', 'Cellnex / Towerlink', 'Emitel', 'Orange', 'Play', 'Plus', 'T-Mobile', 'Własny'];
+/** Structure owners, grouped as they are shown in the owner list. */
+const OWNER_GROUPS: { label: string; options: string[] }[] = [
+  { label: '', options: ['Nieznany'] },
+  { label: 'Operatorzy sieci', options: ['Orange', 'T-Mobile', 'Play', 'Plus'] },
+  { label: 'Firmy wieżowe', options: ['Cellnex / Towerlink', 'On Tower Poland', 'Emitel'] },
+  { label: 'Telekomunikacja i kolej', options: ['Exatel', 'Netia', 'PKP / PKP PLK'] },
+  { label: 'Energetyka', options: ['PGE', 'Tauron', 'Enea', 'Energa'] },
+  // Companies only: what the structure is (building, church tower, chimney…) belongs in "Konstrukcja".
+];
+const OWNERS = OWNER_GROUPS.flatMap(g => g.options);
 const BACKHAUL_OPTIONS = ['Nieznany', 'Radiolinia', 'Światłowód'];
 const CELL_TYPES = ['macro', 'micro', 'indoor'] as const;
 const MAX_AZIMUTHS = 15;
@@ -293,14 +306,273 @@ function SelectBox({
   invalid?: boolean;
   chevron?: 'updown' | 'down';
 }) {
+  // Options are still written as <option> children; they are read here and shown in a styled list.
+  const options = React.Children.toArray(children)
+    .filter((c): c is React.ReactElement<{ value?: string; disabled?: boolean; children?: React.ReactNode }> => React.isValidElement(c) && c.type === 'option')
+    .map(c => ({ value: String(c.props.value ?? ''), label: textOf(c.props.children), disabled: Boolean(c.props.disabled) }))
+    // A disabled empty option is only a prompt ("Wybierz pasmo"); the field shows it, the list does not.
+    .filter(o => !(o.disabled && o.value === ''));
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number; maxHeight: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const place = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    const openUp = below < 220 && above > below;
+    setPos({
+      left: Math.min(r.left, window.innerWidth - Math.max(r.width, 180) - 8),
+      width: Math.max(r.width, 180),
+      ...(openUp ? { bottom: window.innerHeight - r.top + 6 } : { top: r.bottom + 6 }),
+      maxHeight: Math.min(320, openUp ? above : below),
+    });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!btnRef.current?.contains(t) && !listRef.current?.contains(t)) setOpen(false);
+    };
+    // The list is placed against the viewport, so it closes when anything around it scrolls or resizes.
+    const onMove = (e: Event) => {
+      if (listRef.current && e.target instanceof Node && listRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) listRef.current?.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+  }, [open, active]);
+
+  const openList = () => {
+    place();
+    setActive(Math.max(0, options.findIndex(o => o.value === value)));
+    setOpen(true);
+  };
+  const choose = (o: { value: string; disabled: boolean }) => {
+    if (o.disabled) return;
+    onChange(o.value);
+    setOpen(false);
+    btnRef.current?.focus();
+  };
+  const step = (dir: 1 | -1) => {
+    setActive(i => {
+      let n = i;
+      for (let k = 0; k < options.length; k++) {
+        n = (n + dir + options.length) % options.length;
+        if (!options[n].disabled) return n;
+      }
+      return i;
+    });
+  };
+  const portalHost = (btnRef.current?.closest('.ss-backdrop') as HTMLElement | null) || document.body;
+
   return (
-    <div className={`ss-select ${invalid ? 'is-invalid' : ''} ${className}`}>
-      {icon && <span className="ss-select-icon">{icon}</span>}
-      <span className="ss-select-value">{display ?? value}</span>
-      {chevron === 'updown' ? <ChevronsUpDown size={13} className="ss-select-chev" /> : <ChevronDown size={14} className="ss-select-chev" />}
-      <select value={value} onChange={e => onChange(e.target.value)}>
-        {children}
-      </select>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className={`ss-select ${invalid ? 'is-invalid' : ''} ${open ? 'is-open' : ''} ${className}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openList())}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!open) openList();
+            else step(e.key === 'ArrowDown' ? 1 : -1);
+          } else if ((e.key === 'Enter' || e.key === ' ') && open) {
+            e.preventDefault();
+            if (options[active]) choose(options[active]);
+          } else if (e.key === 'Escape' && open) {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+          } else if (e.key === 'Tab') {
+            setOpen(false);
+          }
+        }}
+      >
+        {icon && <span className="ss-select-icon">{icon}</span>}
+        <span className="ss-select-value">{display ?? (options.find(o => o.value === value)?.label || value)}</span>
+        {chevron === 'updown' ? <ChevronsUpDown size={13} className="ss-select-chev" /> : <ChevronDown size={14} className="ss-select-chev" />}
+      </button>
+      {open && pos && createPortal(
+        <ul
+          ref={listRef}
+          className="ss-dropdown"
+          role="listbox"
+          style={{ left: pos.left, top: pos.top, bottom: pos.bottom, minWidth: pos.width, maxHeight: pos.maxHeight }}
+        >
+          {options.map((o, i) => (
+            <li
+              key={`${o.value}-${i}`}
+              role="option"
+              aria-selected={o.value === value}
+              aria-disabled={o.disabled || undefined}
+              className={`${o.value === value ? 'is-selected' : ''} ${i === active ? 'is-active' : ''} ${o.disabled ? 'is-disabled' : ''}`}
+              onMouseEnter={() => !o.disabled && setActive(i)}
+              onMouseDown={e => {
+                e.preventDefault();
+                choose(o);
+              }}
+            >
+              <span>{o.label}</span>
+              {o.value === value && <Check size={14} />}
+            </li>
+          ))}
+        </ul>,
+        portalHost,
+      )}
+    </>
+  );
+}
+
+/** Plain text of an option's children (strings, numbers and nested arrays). */
+function textOf(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) return textOf(node.props.children);
+  return '';
+}
+
+/** How each structure owner is shown: the brand's logo where the app has one, otherwise a plain icon. */
+type OwnerIcon = 'tower' | 'unknown';
+const OWNER_BRANDS: Record<string, { logo?: string; logoClass?: string; icon?: OwnerIcon }> = {
+  Orange: { logo: '/logos/orange.svg', logoClass: 'is-square' },
+  'T-Mobile': { logo: '/logos/tmobile.svg', logoClass: 'is-square' },
+  Play: { logo: '/logos/play.svg', logoClass: 'is-play' },
+  Plus: { logo: '/logos/plus.svg', logoClass: 'is-plus' },
+  Emitel: { logo: '/logos/emitel.svg', logoClass: 'is-emitel' },
+  Exatel: { logo: '/logos/exatel.png', logoClass: 'is-white' },
+  Netia: { logo: '/logos/netia.png', logoClass: 'is-white' },
+  PGE: { logo: '/logos/pge.png', logoClass: 'is-white' },
+  Tauron: { logo: '/logos/tauron.png', logoClass: 'is-white' },
+  Enea: { logo: '/logos/enea.png', logoClass: 'is-white' },
+  'Cellnex / Towerlink': { logo: '/logos/cellnex.svg', logoClass: 'is-white-wide' },
+  // On Tower Poland belongs to the Cellnex group and is shown with the Cellnex logo.
+  'On Tower Poland': { logo: '/logos/cellnex.svg', logoClass: 'is-white-wide' },
+  'PKP / PKP PLK': { logo: '/logos/pkp-plk.png', logoClass: 'is-white-wide' },
+  Energa: { logo: '/logos/energa.png', logoClass: 'is-white-wide' },
+  Nieznany: { icon: 'unknown' },
+};
+
+const OWNER_ICONS: Record<OwnerIcon, React.ReactNode> = {
+  tower: <RadioTower size={14} />,
+  unknown: <HelpCircle size={14} />,
+};
+
+function OwnerMark({ owner }: { owner: string }) {
+  const brand = OWNER_BRANDS[owner] || { icon: 'unknown' as const };
+  if (brand.logo) {
+    return (
+      <span className={`ss-owner-mark ${brand.logoClass || ''}`}>
+        <img src={brand.logo} alt="" />
+      </span>
+    );
+  }
+  return <span className="ss-owner-mark is-icon">{OWNER_ICONS[brand.icon || 'unknown']}</span>;
+}
+
+/** A select whose options carry the owner's logo; a native select cannot show images in its list. */
+function OwnerSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(() => Math.max(0, options.indexOf(value)));
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const choose = (v: string) => {
+    onChange(v);
+    setOpen(false);
+  };
+
+  return (
+    <div
+      className="ss-owner-select"
+      ref={wrapRef}
+      onKeyDown={e => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation();
+          setOpen(false);
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (!open) {
+            setOpen(true);
+            setActive(Math.max(0, options.indexOf(value)));
+          } else {
+            setActive(i => (i + (e.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length);
+          }
+        } else if ((e.key === 'Enter' || e.key === ' ') && open) {
+          e.preventDefault();
+          choose(options[active]);
+        }
+      }}
+    >
+      <button
+        type="button"
+        className="ss-select ss-owner-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => {
+          setActive(Math.max(0, options.indexOf(value)));
+          setOpen(o => !o);
+        }}
+      >
+        <OwnerMark owner={value} />
+        <span className={`ss-select-value ${value === 'Nieznany' ? 'ss-placeholder' : ''}`}>{value}</span>
+        <ChevronDown size={14} className="ss-select-chev" />
+      </button>
+      {open && (
+        <ul className="ss-owner-list" role="listbox" aria-label="Właściciel konstrukcji">
+          {OWNER_GROUPS.map(group => (
+            <React.Fragment key={group.label || 'none'}>
+              {group.label && <li className="ss-owner-group" role="presentation">{group.label}</li>}
+              {group.options.map(o => {
+                const i = options.indexOf(o);
+                return (
+                  <li
+                    key={o}
+                    role="option"
+                    aria-selected={o === value}
+                    className={`${o === value ? 'is-selected' : ''} ${i === active ? 'is-active' : ''}`}
+                    onMouseEnter={() => setActive(i)}
+                    onMouseDown={e => {
+                      e.preventDefault();
+                      choose(o);
+                    }}
+                  >
+                    <OwnerMark owner={o} />
+                    <span>{o}</span>
+                    {o === value && <Check size={14} className="ss-owner-check" />}
+                  </li>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -365,6 +637,8 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
 
   // Submit
   const [editorNote, setEditorNote] = useState('');
+  // Missing required values are pointed out only after the first submit attempt, not while the form is still empty.
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [isDone, setIsDone] = useState(false);
@@ -714,7 +988,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
     }
     const angles = ukeAzimuths.length > 0 ? ukeAzimuths : (activeSourceTower.azimuths || []);
     if (!angles.length) {
-      setSectorNotice('To pozwolenie UKE nie zawiera zdefiniowanych kątów azymutów w wykazie.');
+      setSectorNotice('Dla tej stacji nie ma znanych azymutów (brak w pozwoleniach UKE i w raportach SI2PEM). Wpisz je ręcznie na podstawie obserwacji w terenie.');
       return;
     }
     const ukeSectors: SectorConfig[] = angles.slice(0, MAX_AZIMUTHS).map((az, i) => ({
@@ -723,7 +997,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
       freqs: sectors[i]?.freqs?.length ? sectors[i].freqs : [...ukeUniqueFreqs],
     }));
     applySectorsAndSyncCells(ukeSectors);
-    setSectorNotice(`Wczytano ${ukeSectors.length} ${plural(ukeSectors.length, 'sektor', 'sektory', 'sektorów')} z wykazu UKE (${angles.join('°, ')}°).`);
+    setSectorNotice(`Wczytano ${ukeSectors.length} ${plural(ukeSectors.length, 'sektor', 'sektory', 'sektorów')} ${ukeAzimuths.length > 0 || activeSourceTower.azimuthsSource === 'uke' ? 'z pozwoleń UKE' : activeSourceTower.azimuthsSource === 'si2pem' ? 'z raportu SI2PEM' : 'z danych stacji'} (${angles.join('°, ')}°).`);
   };
 
   const handleLoadSi2pemSectors = async () => {
@@ -856,6 +1130,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
     [city, address, stationId, stationName, notes, mastDescription].filter(v => v.trim()).length;
 
   const handleSubmit = async () => {
+    setSubmitAttempted(true);
     if (totalErrors > 0) {
       setShowErrorList(true);
       return;
@@ -1024,7 +1299,12 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
   };
 
   const renderRow = (cell: CellInput, t: RatTech) => {
-    const err = cellValidation[cell.id!] || {};
+    // A wrong value is shown at once; an empty required field only after a submit attempt.
+    const err = Object.fromEntries(
+      Object.entries(cellValidation[cell.id!] || {}).filter(
+        ([field]) => submitAttempted || String((cell as unknown as Record<string, unknown>)[field] ?? '').trim() !== '',
+      ),
+    ) as Record<string, string>;
     const cols = columnsFor(t).length;
     const eci = t === 'LTE' ? calculateEci(cell.nodeId ?? '', cell.cellId ?? '', 'LTE') : null;
     const longCid = t === 'UMTS' && umtsRnc && cell.cellId ? Number(umtsRnc) * 65536 + Number(cell.cellId) : null;
@@ -1156,7 +1436,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
             <strong>{activeSourceTower?.stationId ? `Zgłoszenie stacji: ${activeSourceTower.stationId}` : 'Nowe zgłoszenie stacji'}</strong>
           </nav>
           <div className="ss-topbar-right">
-            {totalErrors > 0 ? (
+            {totalErrors > 0 && !submitAttempted ? null : totalErrors > 0 ? (
               <button
                 type="button"
                 className="ss-err-pill"
@@ -1214,24 +1494,13 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                     </button>
                   </div>
                 </div>
-                <div className="ss-card-body">
-                  <p className="ss-muted">
-                    {stationMode === 'new'
-                      ? 'Wskaż punkt na mapie satelitarnej i uzupełnij parametry radiowe odebrane w terenie.'
-                      : 'Zaproponuj korektę parametrów lub uzupełnienie komórek dla wybranej lokalizacji.'}
-                  </p>
-                </div>
               </section>
 
               {/* Wybór operatora sieci */}
               <section className="ss-card ss-card-operator" style={{ '--current-op-color': opColor } as React.CSSProperties}>
                 <div className="ss-card-head">
                   <span className="ss-card-title">
-                    <Signal size={15} style={{ color: opColor }} /> Operator stacji bazowej
-                  </span>
-                  <span className="ss-op-selected-tag" style={{ borderColor: opColor, color: opColor }}>
-                    <i className="ss-op-dot" style={{ background: opColor }} />
-                    {operator}
+                    <Signal size={15} /> Operator
                   </span>
                 </div>
                 <div className="ss-card-body">
@@ -1259,9 +1528,6 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                       );
                     })}
                   </div>
-                  <p className="ss-help">
-                    Wybór operatora filtruje dostępne pasma radiowe (np. wyłączność pasma 2600 TDD dla Plus) oraz reguły walidacji kanałów i numeracji stacji.
-                  </p>
                 </div>
               </section>
 
@@ -1349,7 +1615,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                     <label className="ss-field">
                       <span>Miejscowość</span>
                       <input
-                        className={`ss-input ${stationErrors.city ? 'is-invalid' : ''}`}
+                        className={`ss-input ${submitAttempted && stationErrors.city ? 'is-invalid' : ''}`}
                         value={city}
                         onChange={e => setCity(e.target.value)}
                         placeholder="np. Poznań"
@@ -1385,19 +1651,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                     </div>
                     <div className="ss-field">
                       <span>Właściciel konstrukcji</span>
-                      <SelectBox
-                        value={owner}
-                        onChange={setOwner}
-                        chevron="down"
-                        icon={<Building size={14} />}
-                        display={<span className={owner === 'Nieznany' ? 'ss-placeholder' : ''}>{owner}</span>}
-                      >
-                        {OWNERS.map(o => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </SelectBox>
+                      <OwnerSelect value={owner} options={OWNERS} onChange={setOwner} />
                     </div>
                   </div>
 
@@ -1426,22 +1680,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                 <div className="ss-card-body">
                   <div className="ss-inline ss-gap-12">
                     <div className="ss-field">
-                      <span>Sieć macierzysta</span>
-                      <SelectBox
-                        value={operator}
-                        onChange={setOperator}
-                        className="ss-fit"
-                        icon={<i className="ss-op-dot" style={{ background: opColor }} />}
-                      >
-                        {OPERATORS.map(o => (
-                          <option key={o.name} value={o.name}>
-                            {o.name}
-                          </option>
-                        ))}
-                      </SelectBox>
-                    </div>
-                    <div className="ss-field">
-                      <span>Dosył (Backhaul)</span>
+                      <span>Łącze dosyłowe</span>
                       <SelectBox value={backhaul} onChange={setBackhaul} className="ss-w-140">
                         {BACKHAUL_OPTIONS.map(b => (
                           <option key={b} value={b}>
@@ -1456,7 +1695,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                     <label className="ss-field">
                       <span>ID stacji</span>
                       <input
-                        className={`ss-input ss-mono ${stationErrors.stationId ? 'is-invalid' : ''}`}
+                        className={`ss-input ss-mono ${submitAttempted && stationErrors.stationId ? 'is-invalid' : ''}`}
                         value={stationId}
                         onChange={e => setStationId(e.target.value.toUpperCase())}
                         placeholder="np. WAWA001"
@@ -1472,7 +1711,6 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                       />
                     </label>
                   </div>
-                  <p className="ss-help">Oznaczenie stacji z pozwolenia radiowego lub programu pomiarowego</p>
 
                   <label className="ss-field">
                     <span>Informacje ogólne o stacji</span>

@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import readXlsxFile from 'read-excel-file/node';
 import { operatorColor, operatorName as canonicalOperatorName } from '../shared/operators.ts';
+import { ensureRegistrySnapshot, recordRegistrySnapshot } from './stats.ts';
+import { carryOverAzimuths, normalizeAzimuths } from './kmlAzimuths.ts';
+import { UKE_REGISTER_URL, loadRegisterStations, selectRegisterFiles, type RegisterFile, type RegisterStation } from './ukeRegister.ts';
 
 const BIP_UKE_URL = 'https://bip.uke.gov.pl/pozwolenia-radiowe/wykaz-pozwolen-radiowych-tresci/stacje-gsm-umts-lte-5gnr-oraz-cdma,12,0.html';
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
@@ -65,14 +68,27 @@ export function inferProvinceFromTerytOrCoords(teryt: string, lat: number, lng: 
   return best;
 }
 
+/**
+ * Degrees packed as a number DDMMSS (or DDDMMSS), e.g. 530806 = 53°08'06". Some UKE sheets (the
+ * private-network list) store coordinates this way; read as decimal degrees they are far out of range.
+ */
+function packedDms(value: number): number | null {
+  if (Math.abs(value) <= 180) return value;
+  const sign = value < 0 ? -1 : 1;
+  const n = Math.abs(value);
+  const deg = Math.floor(n / 10000), min = Math.floor(n / 100) % 100, sec = n % 100;
+  if (deg > 180 || min >= 60 || sec >= 60) return null;
+  return sign * Math.round((deg + min / 60 + sec / 3600) * 1e6) / 1e6;
+}
+
 export function parseDmsCoord(raw: unknown): number | null {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return packedDms(raw);
   if (!raw) return null;
   const s = String(raw).trim();
   if (!s) return null;
 
   const plain = parseFloat(s.replace(',', '.'));
-  if (Number.isFinite(plain) && /^[+-]?\d+([.,]\d+)?$/.test(s)) return plain;
+  if (Number.isFinite(plain) && /^[+-]?\d+([.,]\d+)?$/.test(s)) return packedDms(plain);
 
   const match = s.match(/(\d+)\s*[°\D]?\s*([NnSsEeWw])?\s*(\d+)\s*['\s]\s*(\d+(?:[.,]\d+)?)/);
   if (match) {
@@ -86,15 +102,51 @@ export function parseDmsCoord(raw: unknown): number | null {
   return null;
 }
 
-export function parseTechAndBand(filename: string): { tech: string; band: string } {
+/**
+ * Technology and band of a registry file, from its name ("lte1800_-_stan_na_2026-10-26.xlsx").
+ * A file that names only a frequency range ("sieci_prywatne_3800-4200_mhz_...") is imported under that
+ * frequency with the technology left as "Inne". A file that names neither is not a station list we can
+ * place on the map, so it is skipped (null) instead of being stored as "Inne 0 MHz".
+ */
+export function parseTechAndBand(filename: string): { tech: string; band: string } | null {
   const name = basename(filename).toLowerCase();
   const m = name.match(/^(5g|lte|gsm-r|gsm|umts|cdma|iot)(\d+)?/);
-  if (!m) return { tech: 'Inne', band: '0' };
-  let tech = m[1].toUpperCase();
-  if (tech === 'GSM-R') tech = 'GSM-R';
-  if (tech === 'IOT') tech = 'IOT';
-  const band = m[2] || (tech === 'GSM-R' || tech === 'IOT' ? '900' : '0');
-  return { tech, band };
+  if (m) {
+    const tech = m[1].toUpperCase();
+    const band = m[2] || (tech === 'GSM-R' || tech === 'IOT' ? '900' : '0');
+    return { tech, band };
+  }
+  const frequency = name.match(/(\d{3,5})(?:-\d{3,5})?[_\s-]*mhz/);
+  return frequency ? { tech: 'Inne', band: frequency[1] } : null;
+}
+
+export interface RegistryFile { url: string; filename: string; tech: string; band: string; date: string; recognised: boolean }
+
+/**
+ * The registry files linked from the BIP UKE page.
+ * - `date` is the date of the technology lists (the registry itself). Files published on their own
+ *   schedule, such as the private-network list, do not move it.
+ * - `fingerprint` changes whenever any linked file changes, so a new version of any file triggers a sync.
+ */
+export function selectRegistryFiles(html: string, origin = 'https://bip.uke.gov.pl'): { files: RegistryFile[]; skipped: string[]; date: string; fingerprint: string } {
+  const files: RegistryFile[] = [];
+  const skipped: string[] = [];
+  const seen = new Set<string>();
+  const linkRegex = /href="(\/download\/[^"]+?\.xlsx)"/gi;
+  let match: RegExpExecArray | null;
+  while ((match = linkRegex.exec(html)) !== null) {
+    const url = origin + match[1];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const filename = basename(new URL(url).pathname);
+    const parsed = parseTechAndBand(filename);
+    if (!parsed) { skipped.push(filename); continue; }
+    files.push({ url, filename, ...parsed, date: filename.match(/(\d{4}-\d{2}-\d{2})/)?.[1] || '', recognised: parsed.tech !== 'Inne' });
+  }
+  const dates = (list: RegistryFile[]) => list.map(f => f.date).filter(Boolean).sort();
+  const date = dates(files.filter(f => f.recognised)).pop() || dates(files).pop() || '';
+  const fingerprint = createHash('sha256').update(files.map(f => f.url).sort().join('\n')).digest('hex').slice(0, 24);
+  return { files, skipped, date, fingerprint };
 }
 
 export function mapOperatorName(rawName: unknown): string {
@@ -108,8 +160,8 @@ export function mapOperatorName(rawName: unknown): string {
   return canonicalOperatorName(s) || s || 'Inne';
 }
 
-export async function fetchBipUkeLinks(): Promise<{ date: string; links: string[] }> {
-  const res = await fetch(BIP_UKE_URL, {
+export async function fetchBipUkeLinks(fetcher: typeof fetch = fetch) {
+  const res = await fetcher(BIP_UKE_URL, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml',
@@ -117,48 +169,7 @@ export async function fetchBipUkeLinks(): Promise<{ date: string; links: string[
     signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`BIP UKE zwrócił kod błędu HTTP ${res.status}`);
-  const html = await res.text();
-
-  const links: string[] = [];
-  const linkRegex = /href="(\/download\/[^"]+?\.xlsx)"/gi;
-  let match: RegExpExecArray | null;
-  while ((match = linkRegex.exec(html)) !== null) {
-    const fullUrl = match[1].startsWith('http') ? match[1] : 'https://bip.uke.gov.pl' + match[1];
-    if (!links.includes(fullUrl)) links.push(fullUrl);
-  }
-
-  let latestDate = '';
-  for (const link of links) {
-    const lm = link.match(/(\d{4}-\d{2}-\d{2})/);
-    if (lm && (!latestDate || lm[1] > latestDate)) latestDate = lm[1];
-  }
-  if (!latestDate) {
-    const dateMatch = html.match(/stan[_\s]+na[_\s]+(\d{4}-\d{2}-\d{2})/i) || html.match(/(\d{4}-\d{2}-\d{2})\.xlsx/i);
-    if (dateMatch) latestDate = dateMatch[1];
-  }
-
-  // Also check BIP UKE Rejestr Urządzeń for newer weekly operator device registries
-  try {
-    const rejRes = await fetch('https://bip.uke.gov.pl/pozwolenia-radiowe/rejestr-urzadzen/', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (rejRes.ok) {
-      const rejHtml = await rejRes.text();
-      const rejDateRegex = /(\d{4}-\d{2}-\d{2})_[a-z0-9-]+\.xlsx/gi;
-      let rm: RegExpExecArray | null;
-      while ((rm = rejDateRegex.exec(rejHtml)) !== null) {
-        if (!latestDate || rm[1] > latestDate) latestDate = rm[1];
-      }
-    }
-  } catch {
-    // Ignore optional Rejestr Urządzeń date check failure
-  }
-
-  return { date: latestDate, links };
+  return selectRegistryFiles(await res.text());
 }
 
 type StationEntry = {
@@ -169,31 +180,105 @@ type StationEntry = {
   province: string;
   stationId: string;
   teryt: string;
+  /** Highest antenna above ground UKE lists for the station (device register "H anteny"); unknown otherwise. */
+  height?: number;
   operators: {
     name: string;
     color: string;
     stationIds: string[];
-    bands: { tech: string; band: string; status: string; permit: string }[];
+    bands: { tech: string; band: string; status: string; permit: string; entryDate?: string; heightsM?: number[] }[];
+    azimuths?: number[];
   }[];
 };
 
-export async function parseUkeXlsx(filePath: string, defaultTech: string, defaultBand: string, stations: Map<string, StationEntry>) {
+export async function readUkeSheet(filePath: string): Promise<unknown[][]> {
   const rawResult = await readXlsxFile(filePath);
-  let rows: unknown[][];
   if (Array.isArray(rawResult)) {
     if (rawResult.length > 0 && typeof rawResult[0] === 'object' && rawResult[0] !== null && 'data' in rawResult[0]) {
-      rows = (rawResult[0] as { data: unknown[][] }).data;
-    } else if (Array.isArray(rawResult[0])) {
-      rows = (rawResult as unknown) as unknown[][];
-    } else {
-      rows = [];
+      return (rawResult[0] as { data: unknown[][] }).data;
     }
-  } else if (typeof rawResult === 'object' && rawResult !== null && 'data' in rawResult) {
-    rows = (rawResult as { data: unknown[][] }).data;
-  } else {
-    rows = [];
+    return Array.isArray(rawResult[0]) ? (rawResult as unknown) as unknown[][] : [];
   }
-  if (!rows || rows.length < 2) return;
+  if (typeof rawResult === 'object' && rawResult !== null && 'data' in rawResult) {
+    return (rawResult as { data: unknown[][] }).data;
+  }
+  return [];
+}
+
+export async function parseUkeXlsx(filePath: string, defaultTech: string, defaultBand: string, stations: Map<string, StationEntry>) {
+  return parseUkeRows(await readUkeSheet(filePath), defaultTech, defaultBand, stations);
+}
+
+type StationOperator = StationEntry['operators'][number];
+
+/**
+ * The operator entry of a station in the map being built, creating both when needed. A station is
+ * one site of one operator: coordinates (to 6 decimals), operator and station ID. The permit lists
+ * and the device register use the same key, so a station found in both becomes one record.
+ */
+function stationOperator(stations: Map<string, StationEntry>, site: { lat: number; lng: number; operator: string; stationId: string; address: string; teryt: string }): StationOperator {
+  const { lat, lng, operator, stationId, address, teryt } = site;
+  const key = `${lat.toFixed(6)},${lng.toFixed(6)}|${operator}|${stationId}`;
+  let station = stations.get(key);
+  if (!station) {
+    station = {
+      id: 'UKE_' + createHash('sha256').update(key).digest('hex').slice(0, 18),
+      lat,
+      lng,
+      address,
+      province: inferProvinceFromTerytOrCoords(teryt, lat, lng),
+      stationId,
+      teryt,
+      operators: [],
+    };
+    stations.set(key, station);
+  }
+  if (address && (!station.address || station.address.length < address.length)) station.address = address;
+  if (stationId && !station.stationId) station.stationId = stationId;
+  if (teryt && !station.teryt) {
+    station.teryt = teryt;
+    station.province = inferProvinceFromTerytOrCoords(teryt, lat, lng);
+  }
+
+  let op = station.operators.find(o => o.name === operator);
+  if (!op) {
+    op = { name: operator, color: operatorColor(operator), stationIds: [], bands: [] };
+    station.operators.push(op);
+  }
+  if (stationId && !op.stationIds.includes(stationId)) op.stationIds.push(stationId);
+  return op;
+}
+
+/** Adds the stations of the device register (REJ entries) to the map built from the permit lists. */
+export function addRegisterStations(stations: Map<string, StationEntry>, registerStations: RegisterStation[]): number {
+  let bands = 0;
+  for (const site of registerStations) {
+    const op = stationOperator(stations, site);
+    const station = stations.get(`${site.lat.toFixed(6)},${site.lng.toFixed(6)}|${site.operator}|${site.stationId}`)!;
+    for (const b of site.bands) {
+      if (b.azimuths?.length) {
+        const azimuths = normalizeAzimuths([...(op.azimuths || []), ...b.azimuths]);
+        if (azimuths.length) op.azimuths = azimuths;
+      }
+      if (b.heightsM?.length) station.height = Math.max(station.height ?? 0, ...b.heightsM);
+      if (op.bands.some(x => x.tech === b.tech && x.band === b.band && x.permit === b.permit)) continue;
+      op.bands.push({
+        tech: b.tech,
+        band: b.band,
+        status: 'Rejestr',
+        permit: b.permit,
+        ...(b.entryDate ? { entryDate: b.entryDate } : {}),
+        ...(b.heightsM?.length ? { heightsM: b.heightsM } : {}),
+      });
+      bands++;
+    }
+  }
+  return bands;
+}
+
+/** Adds the stations of one registry sheet. Returns how many rows were used. */
+export function parseUkeRows(rows: unknown[][], defaultTech: string, defaultBand: string, stations: Map<string, StationEntry>): number {
+  if (!rows || rows.length < 1) throw new Error('Arkusz wykazu UKE jest pusty (brak wiersza nagłówka).');
 
   const headers = rows[0].map(h => String(h || '').trim().toLowerCase());
   const col = (name: string) => headers.findIndex(h => h.includes(name));
@@ -208,10 +293,21 @@ export async function parseUkeXlsx(filePath: string, defaultTech: string, defaul
   const locCol = col('lokalizacja');
   const idCol = col('idstacji') >= 0 ? col('idstacji') : col('id stacji');
   const terytCol = col('teryt');
+  // A sheet without these columns has a layout this parser does not know. Reading it anyway would
+  // silently yield no stations and, on save, strip this band from every station.
+  const missing = [['operator', opCol], ['szerokość geogr.', latCol], ['długość geogr.', lngCol], ['id stacji', idCol]].filter(([, index]) => (index as number) < 0).map(([name]) => name);
+  if (missing.length) throw new Error(`Arkusz wykazu UKE ma nieznany układ – brak kolumn: ${missing.join(', ')}.`);
+  let used = 0;
+  // Not every registry file has antenna azimuths; when a column is present they are kept with the operator.
+  const azimuthCol = col('azymut');
+  // Lists that span a frequency range (private networks) give the range per row, e.g. "3900-4000".
+  const rangeCol = col('zakres częstotliwości');
+  let dataRows = 0;
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    if (!row || !row.length) continue;
+    if (!row || !row.length || row.every(cell => cell === null || cell === undefined || String(cell).trim() === '')) continue;
+    dataRows++;
 
     const lat = parseDmsCoord(row[latCol]);
     const lng = parseDmsCoord(row[lngCol]);
@@ -219,134 +315,252 @@ export async function parseUkeXlsx(filePath: string, defaultTech: string, defaul
 
     const operator = mapOperatorName(row[opCol]);
     const stationId = String(row[idCol] || '').trim();
-    const coordKey = `${lat.toFixed(6)},${lng.toFixed(6)}`;
-    const key = `${coordKey}|${operator}|${stationId}`;
     const city = String(row[cityCol] || '').trim();
     const loc = String(row[locCol] || '').trim();
     const address = [city, loc].filter(Boolean).join(', ');
     const teryt = String(row[terytCol] || '').trim();
-    const province = inferProvinceFromTerytOrCoords(teryt, lat, lng);
     const decNo = String(row[decCol] || '').trim();
     const decType = String(row[typeCol] || '').trim();
     const expVal = row[expCol];
     const expDate = expVal instanceof Date ? expVal.toISOString().slice(0, 10) : String(expVal || '').slice(0, 10);
     const permit = decNo ? `${decNo}${decType ? ` [${decType}]` : ''}${expDate ? ` - expires ${expDate}` : ''}` : '';
 
-    let station = stations.get(key);
-    if (!station) {
-      const id = 'UKE_' + createHash('sha256').update(key).digest('hex').slice(0, 18);
-      station = {
-        id,
-        lat,
-        lng,
-        address,
-        province,
-        stationId,
-        teryt,
-        operators: [],
-      };
-      stations.set(key, station);
+    const op = stationOperator(stations, { lat, lng, operator, stationId, address, teryt });
+
+    if (azimuthCol >= 0 && row[azimuthCol] !== null && row[azimuthCol] !== undefined) {
+      const azimuths = normalizeAzimuths([...(op.azimuths || []), ...String(row[azimuthCol]).split(/[;,/|\s]+/)]);
+      if (azimuths.length > 0) op.azimuths = azimuths;
     }
 
-    if (address && (!station.address || station.address.length < address.length)) {
-      station.address = address;
-    }
-    if (province && !station.province) {
-      station.province = province;
-    }
-    if (stationId && !station.stationId) {
-      station.stationId = stationId;
-    }
-    if (teryt && !station.teryt) {
-      station.teryt = teryt;
-    }
-
-    let op = station.operators.find(o => o.name === operator);
-    if (!op) {
-      op = {
-        name: operator,
-        color: operatorColor(operator),
-        stationIds: [],
-        bands: [],
-      };
-      station.operators.push(op);
-    }
-
-    if (stationId && !op.stationIds.includes(stationId)) {
-      op.stationIds.push(stationId);
-    }
-
+    const rowBand = rangeCol >= 0 ? String(row[rangeCol] ?? '').match(/(\d{3,5})/)?.[1] : undefined;
+    const band = rowBand || defaultBand;
     const bandEntry = {
       tech: defaultTech,
-      band: defaultBand,
+      band,
       status: 'Pozwolenie',
       permit,
     };
 
-    if (!op.bands.some(b => b.tech === defaultTech && b.band === defaultBand && b.permit === permit)) {
+    if (!op.bands.some(b => b.tech === defaultTech && b.band === band && b.permit === permit)) {
       op.bands.push(bandEntry);
     }
+    used++;
   }
+  // Rows exist but none could be placed in Poland: the coordinates are in a format this parser does not
+  // read. Treated as an error, not as an empty list, so a band is never wiped from every station.
+  if (dataRows > 0 && used === 0) {
+    throw new Error(`Żaden z ${dataRows} wierszy arkusza nie ma współrzędnych w Polsce w odczytywalnym formacie.`);
+  }
+  return used;
 }
 
-export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean } = {}): Promise<{ updated: boolean; date: string; message: string }> {
-  const tempDir = resolve('data/temp_uke');
+export interface UkeSyncOptions {
+  force?: boolean;
+  /** Injected in tests. */
+  fetcher?: typeof fetch;
+  readSheet?: (filePath: string) => Promise<unknown[][]>;
+  readRegister?: (filePath: string, file: RegisterFile) => Promise<RegisterStation[]>;
+  tempDir?: string;
+  /** Where the parsed device-register workbooks are kept, so an unchanged one is not downloaded again. */
+  registerCacheDir?: string;
+  retryDelayMs?: number;
+  /**
+   * Largest share of registry stations one sync may delete. A larger drop is far more likely a truncated
+   * file published by UKE than a real change, so the sync stops instead (`force` overrides it).
+   */
+  maxRemovedShare?: number;
+}
+
+/** Stations created by the registry sync itself. Community, KML-imported and other records are never removed by it. */
+const REGISTRY_STATION_SQL = "source = 'UKE' AND addedBy = 'AutoSync BIP UKE'";
+
+/**
+ * Registry stations that are no longer in the registry just read. A station that has a band from a
+ * supplementary file which could not be read this time is kept: its absence proves nothing.
+ */
+export function findRemovedStations(db: DatabaseSync, keptIds: Set<string>, unreadBands: Set<string>): string[] {
+  const rows = db.prepare(`SELECT id, operators FROM towers WHERE ${REGISTRY_STATION_SQL}`).all() as Array<{ id: string; operators: string }>;
+  return rows.filter(row => {
+    if (keptIds.has(row.id)) return false;
+    if (!unreadBands.size) return true;
+    try {
+      // Matched by technology: a supplementary file may give a different band per row.
+      const ops = JSON.parse(row.operators) as Array<{ bands?: Array<{ tech?: string; band?: string }> }>;
+      return !ops.some(op => (op.bands || []).some(b => unreadBands.has(String(b.tech))));
+    } catch {
+      return true;
+    }
+  }).map(row => row.id);
+}
+
+/**
+ * Bumped when a sync has to rewrite stations already saved: a database synced by an older version
+ * re-reads the registry once even though the files on BIP UKE have not changed.
+ * 2: stations split into partial rows are rebuilt and old KML copies of registry stations are merged.
+ * 3: stations of the device register (REJ entries) are added.
+ * 4: antenna heights from the device register are stored.
+ */
+const SYNC_FORMAT = '4';
+
+/** The device-register workbooks listed on BIP UKE. */
+export async function fetchRegisterFiles(fetcher: typeof fetch = fetch): Promise<RegisterFile[]> {
+  const res = await fetcher(UKE_REGISTER_URL, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml' },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`Strona rejestru urządzeń BIP UKE zwróciła kod błędu HTTP ${res.status}`);
+  return selectRegisterFiles(await res.text());
+}
+
+/** Same station: within this distance, the KML copy and the registry entry are one site. */
+const TWIN_MAX_KM = 0.3;
+
+/**
+ * Rows from the old KML import that duplicate a station of the registry just read: same operator and
+ * station ID, a few metres apart (the KML rounded the coordinates, so the ids differ). The registry is
+ * the current source, so these copies are merged into the registry station. KML stations the registry
+ * does not list are left as they are.
+ */
+export function findKmlTwins(db: DatabaseSync, stations: Iterable<{ id: string; lat: number; lng: number; stationId: string; operators: { name: string }[] }>): Map<string, Array<{ id: string; operators: string }>> {
+  const norm = (op: string, sid: string) => `${op}|${sid.trim().toUpperCase()}`;
+  const index = new Map<string, Array<{ id: string; lat: number; lng: number; operators: string }>>();
+  const rows = db.prepare("SELECT id, stationId, lat, lng, operators FROM towers WHERE addedBy = 'Import KML'").all() as Array<{ id: string; stationId: string | null; lat: number; lng: number; operators: string }>;
+  for (const row of rows) {
+    if (!row.stationId) continue;
+    let names: string[] = [];
+    try { names = (JSON.parse(row.operators) as Array<{ name?: string }>).map(o => String(o?.name || '')); } catch { continue; }
+    for (const name of new Set(names)) {
+      const key = norm(name, row.stationId);
+      const list = index.get(key) || [];
+      list.push(row);
+      index.set(key, list);
+    }
+  }
+  const twins = new Map<string, Array<{ id: string; operators: string }>>();
+  const list = [...stations];
+  // A KML row whose id is itself a registry station is updated in place, never merged away.
+  const claimed = new Set<string>(list.map(st => st.id));
+  for (const st of list) {
+    if (!st.stationId) continue;
+    for (const op of st.operators) {
+      for (const row of index.get(norm(op.name, st.stationId)) || []) {
+        if (claimed.has(row.id)) continue;
+        const km = Math.hypot((row.lat - st.lat) * 111.32, (row.lng - st.lng) * 111.32 * Math.cos(st.lat * Math.PI / 180));
+        if (km > TWIN_MAX_KM) continue;
+        claimed.add(row.id);
+        const merged = twins.get(st.id) || [];
+        merged.push({ id: row.id, operators: row.operators });
+        twins.set(st.id, merged);
+      }
+    }
+  }
+  return twins;
+}
+
+const DOWNLOAD_ATTEMPTS = 3;
+
+async function downloadFile(url: string, targetPath: string, fetcher: typeof fetch, retryDelayMs: number) {
+  let lastError = '';
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetcher(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, signal: AbortSignal.timeout(60000) });
+      if (res.ok) {
+        const data = Buffer.from(await res.arrayBuffer());
+        if (data.length > 0) { writeFileSync(targetPath, data); return; }
+        lastError = 'pusty plik';
+      } else {
+        lastError = `HTTP ${res.status}`;
+      }
+    } catch (err) {
+      lastError = (err as Error).message;
+    }
+    if (attempt < DOWNLOAD_ATTEMPTS) await new Promise(done => setTimeout(done, retryDelayMs * attempt));
+  }
+  throw new Error(`Nie udało się pobrać ${basename(targetPath)} (${lastError}).`);
+}
+
+export async function syncUkeWykaz(db: DatabaseSync, options: UkeSyncOptions = {}): Promise<{ updated: boolean; date: string; message: string }> {
+  const { fetcher = fetch, readSheet = readUkeSheet, retryDelayMs = 2000, maxRemovedShare = 0.2 } = options;
+  const tempDir = resolve(options.tempDir || 'data/temp_uke');
+  const setMeta = (key: string, value: string) => db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(key, value);
+  const getMeta = (key: string) => (db.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as { value?: string } | undefined)?.value || '';
   try {
-    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeSyncAttemptAt', ?)").run(new Date().toISOString());
+    setMeta('ukeSyncAttemptAt', new Date().toISOString());
 
-    const { date, links } = await fetchBipUkeLinks();
-    if (!links.length || !date) {
-      return { updated: false, date: '', message: 'Nie znaleziono wykazów na stronie BIP UKE.' };
+    const { files, skipped, date, fingerprint: permitFingerprint } = await fetchBipUkeLinks(fetcher);
+    if (!files.length || !date) {
+      throw new Error('Na stronie BIP UKE nie znaleziono plików wykazu stacji – możliwa zmiana układu strony.');
+    }
+    if (skipped.length) console.warn(`[UKE Sync] Pominięto pliki bez rozpoznanej technologii i częstotliwości: ${skipped.join(', ')}`);
+
+    // The device register is published on its own page, one workbook per operator, each on its own date.
+    const registerFiles = await fetchRegisterFiles(fetcher);
+    let previousRegister: unknown[] = [];
+    try { previousRegister = JSON.parse(getMeta('ukeRegisterFiles') || '[]'); } catch { previousRegister = []; }
+    if (!registerFiles.length && previousRegister.length) {
+      throw new Error('Na stronie rejestru urządzeń BIP UKE nie znaleziono plików – możliwa zmiana układu strony. Baza pozostaje bez zmian.');
+    }
+    const fingerprint = registerFiles.length
+      ? createHash('sha256').update(`${permitFingerprint}\n${registerFiles.map(f => f.url).sort().join('\n')}`).digest('hex').slice(0, 24)
+      : permitFingerprint;
+
+    const lastDate = getMeta('ukeWykazDate');
+    const lastFingerprint = getMeta('ukeWykazFiles');
+    // Any changed file means there is something new. Databases synced before fingerprints existed fall back to the date.
+    const sameFiles = lastFingerprint ? lastFingerprint === fingerprint : Boolean(lastDate) && date <= lastDate;
+    const unchanged = sameFiles && getMeta('ukeSyncFormat') === SYNC_FORMAT;
+    if (!options.force && unchanged) {
+      if (!lastFingerprint) setMeta('ukeWykazFiles', fingerprint);
+      setMeta('ukeSyncCheckedAt', new Date().toISOString());
+      setMeta('ukeSyncError', '');
+      return { updated: false, date: lastDate || date, message: `Wykaz UKE jest aktualny (stan na ${lastDate || date}).` };
     }
 
-    const lastDateRow = db.prepare("SELECT value FROM metadata WHERE key = 'ukeWykazDate'").get() as { value?: string } | undefined;
-    const lastDate = lastDateRow?.value || '';
-
-    if (!options.force && lastDate && date <= lastDate) {
-      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeSyncCheckedAt', ?)").run(new Date().toISOString());
-      return { updated: false, date: lastDate, message: `Wykaz UKE jest aktualny (stan na ${lastDate}).` };
-    }
-
-    console.log(`[UKE Sync] Znaleziono nowy wykaz UKE (${date}, poprzedni: ${lastDate || 'brak'}). Pobieranie ${links.length} plików...`);
+    console.log(`[UKE Sync] Znaleziono nowy wykaz UKE (${date}, poprzedni: ${lastDate || 'brak'}). Pobieranie ${files.length} plików...`);
 
     if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
     mkdirSync(tempDir, { recursive: true });
 
-    const downloadedFiles: { path: string; tech: string; band: string }[] = [];
-    for (const link of links) {
-      const filename = basename(new URL(link).pathname);
-      const targetPath = resolve(tempDir, filename);
-      const res = await fetch(link, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        signal: AbortSignal.timeout(60000),
-      });
-      if (!res.ok) {
-        console.warn(`[UKE Sync] Ostrzeżenie: Nie udało się pobrać ${filename} (${res.status})`);
-        continue;
-      }
-      const arrayBuffer = await res.arrayBuffer();
-      writeFileSync(targetPath, Buffer.from(arrayBuffer));
-
-      const { tech, band } = parseTechAndBand(filename);
-      downloadedFiles.push({ path: targetPath, tech, band });
-    }
-
-    if (!downloadedFiles.length) {
-      throw new Error('Nie udało się pobrać żadnego pliku z BIP UKE.');
-    }
-
-    console.log(`[UKE Sync] Przetwarzanie ${downloadedFiles.length} arkuszy Excel...`);
+    // All or nothing. The save step replaces each station's permits with what was just read, so one
+    // missing or unreadable file would erase that band from every station and never be retried.
+    // The exception is a supplementary list without a technology (private networks): its stations appear
+    // in no other file, so skipping it leaves them as they were and must not block the main registry.
     const stations = new Map<string, StationEntry>();
-    for (const item of downloadedFiles) {
+    const unreadBands = new Set<string>();
+    for (const item of files) {
+      const targetPath = resolve(tempDir, item.filename);
       try {
-        await parseUkeXlsx(item.path, item.tech, item.band, stations);
+        await downloadFile(item.url, targetPath, fetcher, retryDelayMs);
+        parseUkeRows(await readSheet(targetPath), item.tech, item.band, stations);
       } catch (err) {
-        console.warn(`[UKE Sync] Błąd parsowania pliku ${basename(item.path)}:`, err);
+        const reason = `Nie udało się wczytać pliku ${item.filename}: ${(err as Error).message}`;
+        if (item.recognised) throw new Error(reason);
+        unreadBands.add(item.tech);
+        console.warn(`[UKE Sync] ${reason} Plik dodatkowy – pominięto.`);
       }
     }
 
     if (stations.size === 0) {
       throw new Error('Po sparsowaniu plików liczba stacji wynosi 0. Anulowano aktualizację bazy.');
+    }
+
+    if (registerFiles.length) {
+      const registerStations = await loadRegisterStations(registerFiles, {
+        fetcher,
+        cacheDir: resolve(options.registerCacheDir || 'data/uke_register_cache'),
+        helpers: { parseCoord: parseDmsCoord, mapOperator: mapOperatorName },
+        readRegister: options.readRegister,
+        retryDelayMs,
+      });
+      const added = addRegisterStations(stations, registerStations);
+      console.log(`[UKE Sync] Rejestr urządzeń: ${registerStations.length} stacji, ${added} wpisów pasm (${registerFiles.map(f => `${f.operator} ${f.date}`).join(', ')}).`);
+    }
+
+    // A station UKE no longer lists is gone, so it is removed from the map.
+    const removedIds = findRemovedStations(db, new Set([...stations.values()].map(st => st.id)), unreadBands);
+    const registryCount = Number((db.prepare(`SELECT COUNT(*) AS c FROM towers WHERE ${REGISTRY_STATION_SQL}`).get() as { c: number }).c);
+    if (!options.force && registryCount > 0 && removedIds.length / registryCount > maxRemovedShare) {
+      throw new Error(`Nowy wykaz UKE nie zawiera ${removedIds.length} z ${registryCount} stacji (więcej niż ${Math.round(maxRemovedShare * 100)}%). To wygląda na niepełny plik, więc baza pozostaje bez zmian. Jeśli to prawdziwa zmiana, uruchom: pnpm sync:uke --force`);
     }
 
     console.log(`[UKE Sync] Zapisywanie ${stations.size} stacji do bazy danych...`);
@@ -373,19 +587,42 @@ export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean 
       }
     }
 
+    const twins = findKmlTwins(db, stations.values());
+    const twinCount = [...twins.values()].reduce((sum, list) => sum + list.length, 0);
+
+    // Keep the pre-sync state as a baseline if this database has no snapshot yet.
+    try { ensureRegistrySnapshot(db); } catch (snapshotErr) { console.warn('[UKE Sync] Nie zapisano migawki bazowej:', (snapshotErr as Error).message); }
+
     db.exec('BEGIN TRANSACTION;');
     try {
       const insertOrUpdate = db.prepare(`
-        INSERT INTO towers (id, stationId, address, province, lat, lng, operators, source, addedBy, status, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'UKE', 'AutoSync BIP UKE', 'APPROVED', ?)
+        INSERT INTO towers (id, stationId, address, province, lat, lng, operators, height, source, addedBy, status, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UKE', 'AutoSync BIP UKE', 'APPROVED', ?)
         ON CONFLICT(id) DO UPDATE SET
           stationId = CASE WHEN excluded.stationId != '' THEN excluded.stationId ELSE towers.stationId END,
           address = CASE WHEN excluded.address != '' THEN excluded.address ELSE towers.address END,
           province = CASE WHEN excluded.province != '' THEN excluded.province ELSE towers.province END,
-          operators = excluded.operators
+          operators = excluded.operators,
+          height = COALESCE(excluded.height, towers.height)
       `);
 
+      const storedOperators = db.prepare('SELECT operators FROM towers WHERE id = ?');
+      const moveRefs = ['comments', 'photos', 'tower_history'].map(table => db.prepare(`UPDATE ${table} SET towerId = ? WHERE towerId = ?`));
+      const removeTwin = db.prepare('DELETE FROM towers WHERE id = ?');
+      const removeTwinPemCounts = db.prepare('DELETE FROM pem_report_operator_counts WHERE towerId = ?');
+      const removeTwinPemCount = db.prepare('DELETE FROM pem_report_counts WHERE towerId = ?');
       for (const st of stations.values()) {
+        // The sync overwrites operators; azimuths this registry does not carry stay with the station.
+        const stored = storedOperators.get(st.id) as { operators?: string } | undefined;
+        if (stored?.operators) carryOverAzimuths(st.operators, stored.operators);
+        // An old KML copy of this station is merged in: its azimuths and anything users attached move here.
+        for (const twin of twins.get(st.id) || []) {
+          carryOverAzimuths(st.operators, twin.operators);
+          for (const move of moveRefs) move.run(st.id, twin.id);
+          removeTwinPemCounts.run(twin.id);
+          removeTwinPemCount.run(twin.id);
+          removeTwin.run(twin.id);
+        }
         insertOrUpdate.run(
           st.id,
           st.stationId,
@@ -394,11 +631,27 @@ export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean 
           st.lat,
           st.lng,
           JSON.stringify(st.operators),
+          st.height ?? null,
           now
         );
       }
 
+      const removeTower = db.prepare('DELETE FROM towers WHERE id = ?');
+      const removePemCounts = db.prepare('DELETE FROM pem_report_operator_counts WHERE towerId = ?');
+      const removePemCount = db.prepare('DELETE FROM pem_report_counts WHERE towerId = ?');
+      for (const id of removedIds) {
+        removeTower.run(id);
+        removePemCounts.run(id);
+        removePemCount.run(id);
+      }
+      if (removedIds.length) console.log(`[UKE Sync] Usunięto ${removedIds.length} stacji, których nie ma już w wykazie UKE.`);
+      if (twinCount) console.log(`[UKE Sync] Scalono ${twinCount} zdublowanych kopii stacji z importu KML.`);
+      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeSyncFormat', ?)").run(SYNC_FORMAT);
+      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeRegisterFiles', ?)").run(JSON.stringify(registerFiles.map(f => ({ operator: f.operator, date: f.date }))));
+
       db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeWykazDate', ?)").run(date);
+      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeWykazFiles', ?)").run(fingerprint);
+      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeSyncRemoved', ?)").run(String(removedIds.length));
       db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('importedAt', ?)").run(now);
       db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('sourceDescription', ?)").run(`Automatyczny wykaz stacji UKE (stan na ${date})`);
       db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('ukeSyncCheckedAt', ?)").run(now);
@@ -406,6 +659,8 @@ export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean 
 
       db.exec('COMMIT;');
       console.log(`[UKE Sync] Baza pomyślnie zaktualizowana na stan ${date}.`);
+      // Growth statistics are the difference between this snapshot and the previous registry's.
+      try { recordRegistrySnapshot(db, date); } catch (snapshotErr) { console.warn('[UKE Sync] Nie zapisano migawki statystyk:', (snapshotErr as Error).message); }
     } catch (dbErr) {
       db.exec('ROLLBACK;');
       throw dbErr;
@@ -416,7 +671,7 @@ export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean 
       console.log(`[UKE Sync] Pliki tymczasowe zostały usunięte.`);
     }
 
-    return { updated: true, date, message: `Pomyślnie wgrano nowy wykaz UKE (${date}) obejmujący ${stations.size} stacji.` };
+    return { updated: true, date, message: `Pomyślnie wgrano nowy wykaz UKE (${date}) obejmujący ${stations.size} stacji${removedIds.length ? `; usunięto ${removedIds.length} stacji, których nie ma już w wykazie` : ''}.` };
   } catch (err) {
     const errorMsg = (err as Error).message;
     console.error(`[UKE Sync] Błąd synchronizacji wykazu UKE:`, errorMsg);
@@ -433,18 +688,14 @@ export async function syncUkeWykaz(db: DatabaseSync, options: { force?: boolean 
 export function createUkeSync(db: DatabaseSync) {
   let timer: NodeJS.Timeout | null = null;
   let interval: NodeJS.Timeout | null = null;
-  let isRunning = false;
+  let running: Promise<void> | null = null;
 
-  const runSync = async (force = false) => {
-    if (isRunning) return;
-    isRunning = true;
-    try {
-      await syncUkeWykaz(db, { force });
-    } catch (e) {
-      console.error('[UKE Sync Timer] Błąd:', (e as Error).message);
-    } finally {
-      isRunning = false;
-    }
+  const runSync = (force = false) => {
+    // One sync at a time; a second caller waits for the one in progress.
+    running ??= syncUkeWykaz(db, { force })
+      .then(() => undefined, e => console.error('[UKE Sync Timer] Błąd:', (e as Error).message))
+      .finally(() => { running = null; });
+    return running;
   };
 
   return {
@@ -468,6 +719,8 @@ export function createUkeSync(db: DatabaseSync) {
       if (interval) clearInterval(interval);
       timer = null;
       interval = null;
+      // Let a sync in progress finish its transaction before the database is closed.
+      await running;
     },
 
     async syncNow(force = false) {

@@ -1,12 +1,12 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
-import { mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import sharp from 'sharp';
-import { getTowers, normalizeTower,withPemCounts } from './query.ts';
+import { getNewEntryWindow, getTowers, normalizeTower,withPemCounts } from './query.ts';
 import { withAzimuths } from './azimuths.ts';
 import {createPemService,towerForPemOperator} from './pem.ts';
 import {createPemReportsService} from './pemReports.ts';
@@ -15,30 +15,62 @@ import {createPemPdfService} from './pemCatalog.ts';
 import type {createSi2pemSync} from './si2pemSync.ts';
 import type {Tower} from '../src/types.ts';
 import {validateStationSubmission} from '../shared/cellValidation.ts';
-import {calculateTerrainProfile} from './terrainProfile.ts';
+import { MAP_RADIOLINE_LIMIT } from '../shared/mapLimits.ts';
+import { MAX_JSON_BODY_BYTES, MAX_PHOTO_BODY_BYTES, MAX_PHOTO_BYTES } from '../shared/uploadLimits.ts';
+import {calculateTerrainProfile, TerrainDataUnavailableError} from './terrainProfile.ts';
 import {evaluateAreaCoverage} from './areaEvaluation.ts';
 import {getTelecomStats, invalidateStatsCache, warmStatsCache} from './stats.ts';
 import {getTowerHistory, recordTowerChange} from './towerHistory.ts';
 import {getKmzCatalog, generateKmzArchive} from './kmzExport.ts';
+import {cleanNodeLinkRequest, resolveNodeLink, saveNodeLink, withNodeLinks, getNearestTowers} from './nodeLinks.ts';
 
 type User = { id: string; email: string; nick: string; role: string; points: number; level: number };
 const publicUser = (user: Record<string, unknown>) => ({ id:user.id, email:user.email, nick:user.nick, role:user.role, points:user.points, level:user.level });
 const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 const text = (value: unknown, max = 500) => typeof value === 'string' ? value.trim().slice(0,max) : '';
+/** The released version, read from package.json so it is stated in one place. */
+const APP_VERSION = (() => {
+  try { return String(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || 'unknown'); }
+  catch { return 'unknown'; }
+})();
+/**
+ * Answers 500 with a fixed message. The underlying error goes to the server log only: its text can
+ * contain SQL, file paths or upstream URLs that are of no use to a visitor.
+ */
+const serverError = (res: Response, error: unknown, message: string) => {
+  console.error(`[API] ${message}`, error);
+  res.status(500).json({ error: message });
+};
+/** Optional numeric cell field: a finite number, or undefined so it is left out of the stored record. */
+const cellNumber = (value: unknown) => value === null || value === undefined || String(value).trim() === '' || !Number.isFinite(Number(value)) ? undefined : Number(value);
 
-export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pemSync>) {
+export function createApp(
+  db: DatabaseSync,
+  si2pem?: ReturnType<typeof createSi2pemSync>,
+  { trustProxy = process.env.TRUST_PROXY }: { trustProxy?: string } = {},
+) {
   const app = express();
+  // Behind a reverse proxy req.ip is the proxy itself, so every visitor would share one rate-limit bucket.
+  // TRUST_PROXY is the number of proxies in front of the API (1 for the bundled nginx) or an Express
+  // "trust proxy" value such as "loopback". Leave it unset when the API is reachable directly:
+  // otherwise clients could forge X-Forwarded-For and dodge the limit.
+  if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy === 'true' ? true : trustProxy);
   const getPem=createPemService();
   const getPemReports=si2pem?.reports||createPemReportsService(fetch,db);
   const pemPlans=si2pem?.plans||createPemPlansService(db);
   const getPemPdf=createPemPdfService(getPemReports,db);
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '15mb' }));
+  // Only the photo comment endpoint accepts large bodies; everything else stays small.
+  const jsonBody = express.json({ limit: MAX_JSON_BODY_BYTES });
+  const photoBody = express.json({ limit: MAX_PHOTO_BODY_BYTES });
+  app.use((req, res, next) => (/^\/api\/towers\/[^/]+\/comments\/?$/.test(req.path) ? photoBody : jsonBody)(req, res, next));
   app.use((req,res,next) => {
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Cache-Control','no-store');
     if (!['GET','HEAD','OPTIONS'].includes(req.method) && req.headers.origin) {
-      const origin = new URL(req.headers.origin);
+      // "null" (sandboxed pages, some redirects) and other unparsable values are simply not an allowed origin.
+      let origin: URL;
+      try { origin = new URL(req.headers.origin); } catch { return res.status(403).json({error:'Niedozwolone źródło żądania.'}); }
       const allowed = [req.headers.host, process.env.PUBLIC_HOST, 'localhost:5173','127.0.0.1:5173','localhost:5174','127.0.0.1:5174','localhost:5175','127.0.0.1:5175','localhost:4173','127.0.0.1:4173'];
       const isLocal = origin.hostname === 'localhost' || origin.hostname === '127.0.0.1';
       if (!allowed.includes(origin.host) && !isLocal) return res.status(403).json({error:'Niedozwolone źródło żądania.'});
@@ -56,15 +88,26 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
     db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(token),id,Date.now()+7*86400000);
     res.cookie('btmap_session',token,{httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production',maxAge:7*86400000,path:'/'});
   };
-  const attempts = new Map<string,{count:number;until:number}>();
-  const rateLimit = (req:Request,res:Response,next:NextFunction) => {
-    const key=req.ip || 'local'; const now=Date.now();
-    if(attempts.size>1000) for(const [ip,entry] of attempts) if(entry.until<now) attempts.delete(ip);
-    let entry=attempts.get(key); if(!entry || entry.until<now) entry={count:0,until:now+600000};
-    entry.count++; attempts.set(key,entry);
-    if(entry.count>30) return res.status(429).json({error:'Za dużo prób. Spróbuj ponownie za 10 minut.'});
-    next();
+  // Fixed-window limiter. Each use has its own counters; the key is the client IP unless a route keys by account.
+  const limiter = (max:number,windowMs:number,keyOf:(req:Request,res:Response)=>string=req=>req.ip || 'local') => {
+    const attempts = new Map<string,{count:number;until:number}>();
+    return (req:Request,res:Response,next:NextFunction) => {
+      const key=keyOf(req,res); const now=Date.now();
+      if(attempts.size>1000) for(const [id,entry] of attempts) if(entry.until<now) attempts.delete(id);
+      let entry=attempts.get(key); if(!entry || entry.until<now) entry={count:0,until:now+windowMs};
+      entry.count++; attempts.set(key,entry);
+      if(entry.count>max) return res.status(429).json({error:`Za dużo prób. Spróbuj ponownie za ${Math.max(1,Math.ceil((entry.until-now)/60000))} min.`});
+      next();
+    };
   };
+  const byAccount = (req:Request,res:Response) => String(res.locals.user?.id || req.ip || 'local');
+  const rateLimit = limiter(30,600000);
+  // Comments award points and store photos; submissions fill the moderation queue.
+  const commentLimit = limiter(20,600000,byAccount);
+  const submitLimit = limiter(30,3600000,byAccount);
+  // These call external elevation services for every request.
+  const terrainLimit = limiter(120,600000);
+  const areaLimit = limiter(30,600000);
   app.get('/api/auth/me',(req,res)=>{ const user=currentUser(req); res.json(user?publicUser(user):null); });
   app.post('/api/auth/register',rateLimit,async(req,res)=>{
     const email=text(req.body.email,254).toLowerCase(), nick=text(req.body.nick,40), password=text(req.body.password,128);
@@ -93,7 +136,11 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
     const btmapTowers=count("SELECT COUNT(*) AS count FROM towers WHERE status='APPROVED' AND source='BTMAP'");
     const ukeTowers=count("SELECT COUNT(*) AS count FROM towers WHERE status='APPROVED' AND source='UKE'");
     const totalTowers=count("SELECT COUNT(*) AS count FROM towers WHERE status='APPROVED'");
-    const data={status:'ok',version:'2.0.3',stats:{towers:totalTowers,btmapTowers,ukeTowers,operators,technologies,provinces},metadata};
+    // The isNew column is added by the radioline sync, so a database that never synced has none.
+    let radiolines={total:0,new:0};
+    try{const row=db.prepare('SELECT COUNT(*) AS total,COALESCE(SUM(isNew),0) AS fresh FROM radiolines').get()!;radiolines={total:Number(row.total),new:Number(row.fresh)};}
+    catch{radiolines={total:count('SELECT COUNT(*) AS count FROM radiolines'),new:0};}
+    const data={status:'ok',version:APP_VERSION,stats:{towers:totalTowers,btmapTowers,ukeTowers,operators,technologies,provinces,radiolines},metadata,newEntries:getNewEntryWindow(db)};
     cachedStats={at:Date.now(),data}; res.json(data);
   });
   app.get('/api/stats', (req, res) => {
@@ -102,7 +149,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       const stats = getTelecomStats(db, source);
       res.json(stats);
     } catch (e) {
-      res.status(500).json({ error: (e as Error).message || 'Błąd pobierania statystyk.' });
+      serverError(res, e, 'Błąd pobierania statystyk.');
     }
   });
   app.get('/api/kmz/catalog', (req, res) => {
@@ -111,7 +158,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       const source = typeof req.query.source === 'string' ? req.query.source : 'ALL';
       res.json(getKmzCatalog(db, { type, source }));
     } catch (e) {
-      res.status(500).json({ error: (e as Error).message || 'Błąd generowania katalogu KMZ.' });
+      serverError(res, e, 'Błąd generowania katalogu KMZ.');
     }
   });
   app.get('/api/kmz/download', (req, res) => {
@@ -126,12 +173,14 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       res.setHeader('Content-Length', String(buffer.length));
       res.send(buffer);
     } catch (e) {
-      res.status(500).json({ error: (e as Error).message || 'Błąd generowania pliku KMZ.' });
+      serverError(res, e, 'Błąd generowania pliku KMZ.');
     }
   });
-  app.get('/api/towers',(req,res)=>{try{res.json(getTowers(db,req.query));}catch(e){res.status(400).json({error:(e as Error).message});}});
+  app.get('/api/towers',(req,res)=>{try{const result=getTowers(db,req.query);res.json(req.query.q?{...result,items:withNodeLinks(db,result.items)}:result);}catch(e){res.status(400).json({error:(e as Error).message});}});
+  // Stations near a point that may carry a cell whose eNB/gNB is not linked yet (see server/nodeLinks.ts).
+  app.get('/api/towers/nearest',(req,res)=>{try{res.json({items:getNearestTowers(db,req.query)});}catch(e){res.status(400).json({error:(e as Error).message});}});
   app.get('/api/pem-plans',(req,res)=>{try{res.json(pemPlans.query(req.query));}catch(e){res.status(400).json({error:(e as Error).message});}});
-  app.get('/api/terrain-profile', async (req, res) => {
+  app.get('/api/terrain-profile', terrainLimit, async (req, res) => {
     try {
       const lat1 = Number(req.query.lat1);
       const lng1 = Number(req.query.lng1);
@@ -163,10 +212,12 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       });
       res.json(result);
     } catch (e) {
-      res.status(500).json({ error: (e as Error).message || 'Błąd wyliczania profilu terenu.' });
+      // No elevation data is an upstream outage, reported as such instead of a profile over invented terrain.
+      if (e instanceof TerrainDataUnavailableError) return res.status(502).json({ error: e.message });
+      serverError(res, e, 'Błąd wyliczania profilu terenu.');
     }
   });
-  app.get('/api/area-evaluation', async (req, res) => {
+  app.get('/api/area-evaluation', areaLimit, async (req, res) => {
     try {
       const lat = Number(req.query.lat ?? req.query.centerLat);
       const lng = Number(req.query.lng ?? req.query.centerLng);
@@ -186,7 +237,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       res.status(400).json({ error: (e as Error).message || 'Błąd analizy terenu i oceny operatorów.' });
     }
   });
-  app.post('/api/area-evaluation', async (req, res) => {
+  app.post('/api/area-evaluation', areaLimit, async (req, res) => {
     try {
       const result = await evaluateAreaCoverage(db, req.body);
       res.json(result);
@@ -198,7 +249,8 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
     if(!db.prepare("SELECT id FROM towers WHERE id=?  AND status='APPROVED'").get(String(req.params.id))) return res.status(404).json({error:'Nie znaleziono stacji w bazie.'});
     next();
   });
-  app.get('/api/towers/:id',(req,res)=>{const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'});res.json(withAzimuths(db,withPemCounts(db,[normalizeTower(row)]))[0]);});
+  app.get('/api/towers/:id',(req,res)=>{const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'});res.json(withNodeLinks(db,withAzimuths(db,withPemCounts(db,[normalizeTower(row,getNewEntryWindow(db))])))[0]);});
+  app.get('/api/towers/:id/node-links',(req,res)=>{const row=db.prepare("SELECT id,stationId,operators FROM towers WHERE id=? AND status='APPROVED'").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'}); res.json((withNodeLinks(db,[row])[0] as {nodeLinks?:unknown[]}).nodeLinks??[]);});
   app.get('/api/towers/:id/pem-reports',async(req,res)=>{
     const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id));
     if(!row)return res.status(404).json({error:'Nie znaleziono stacji w bazie.'});
@@ -247,7 +299,8 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       sql += ` AND operator IN (${operators.map(() => '?').join(',')})`;
       params.push(...operators);
     }
-    sql += ' LIMIT 2000';
+    const radiolineLimit = Math.min(MAP_RADIOLINE_LIMIT, 1000);
+    sql += ` LIMIT ${radiolineLimit}`;
     return res.json(db.prepare(sql).all(...params));
   });
   // Static WebP photo uploads serving
@@ -278,7 +331,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
     res.json(comments);
   });
 
-  app.post('/api/towers/:id/comments', requireUser, async (req, res) => {
+  app.post('/api/towers/:id/comments', requireUser, commentLimit, async (req, res) => {
     try {
       const towerId = String(req.params.id);
       const tower = db.prepare('SELECT id, source FROM towers WHERE id=?').get(towerId) as { id: string; source: string } | undefined;
@@ -305,7 +358,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
         const rawData = match ? match[1] : imageBase64;
         const buffer = Buffer.from(rawData, 'base64');
 
-        if (buffer.length > 15 * 1024 * 1024) {
+        if (buffer.length > MAX_PHOTO_BYTES) {
           return res.status(400).json({ error: 'Zdjęcie przekracza dopuszczalny rozmiar 15 MB.' });
         }
 
@@ -318,11 +371,17 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
         const filePath = resolve(uploadsDir, filename);
 
         // Auto-orient based on EXIF, downscale large phone camera resolutions, and compress to crisp WebP
-        await sharp(buffer)
-          .rotate()
-          .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
-          .webp({ quality: 82, effort: 4 })
-          .toFile(filePath);
+        try {
+          await sharp(buffer)
+            .rotate()
+            .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 82, effort: 4 })
+            .toFile(filePath);
+        } catch {
+          // Not an image, or a format the decoder cannot read: the sender's problem, not a server fault.
+          try { unlinkSync(filePath); } catch { /* nothing was written */ }
+          return res.status(400).json({ error: 'Nie udało się odczytać zdjęcia. Użyj pliku JPG, PNG lub WebP.' });
+        }
 
         photoUrl = `/api/uploads/${filename}`;
         db.prepare('INSERT INTO photos (id, towerId, userNick, url, caption, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
@@ -348,7 +407,7 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       };
       res.status(201).json(comment);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message || 'Wystąpił błąd podczas dodawania komentarza.' });
+      serverError(res, err, 'Wystąpił błąd podczas dodawania komentarza.');
     }
   });
 
@@ -373,7 +432,86 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
   });
 
   app.get('/api/towers/:id/photos', (req, res) => res.json(db.prepare('SELECT * FROM photos WHERE towerId=? ORDER BY createdAt DESC').all(String(req.params.id))));
-  app.post('/api/submit',requireUser,(req,res)=>{
+  type StationData = {
+    operator: string; stationId: string; address: string; province: string; lat: number; lng: number;
+    mastType: string; owner: string; height: number | null; notes: string; cells: unknown; sourceTowerId: string | null;
+  };
+  // Publishes a reviewed station as a BTMap record. The UKE permit row it was based on is never modified.
+  const publishStation = (clean: StationData, userNick: string, titles: { updated: string; created: string }) => {
+    if (!clean.operator || !Number.isFinite(clean.lat) || !Number.isFinite(clean.lng)) {
+      throw new Error('Zgłoszenie nie zawiera operatora lub poprawnych współrzędnych stacji.');
+    }
+    const newId = clean.sourceTowerId ? ('BTMAP_' + clean.sourceTowerId.replace(/^UKE_/, '')) : ('BTMAP_' + randomUUID().slice(0, 12));
+    const ops = [{
+      name: clean.operator,
+      stationIds: clean.stationId ? [clean.stationId] : [],
+      bands: Array.isArray(clean.cells) ? clean.cells.map((c: any) => ({
+        tech: c.tech,
+        band: c.band,
+        pci: c.pci,
+        earfcn: c.earfcn,
+        azimuth: c.azimuth,
+        // Stored only as entered: a 5G cell without a mode is not assumed to be NSA.
+        mode: c.tech === '5G' && (c.mode === 'NSA' || c.mode === 'SA') ? c.mode : undefined,
+        isIot: Boolean(c.isIot),
+        cellType: c.cellType || 'macro',
+        // Cell identity reported from the field. Without these a published station cannot be found by eNB/gNB or cell id.
+        nodeId: cellNumber(c.nodeId),
+        cellId: cellNumber(c.cellId),
+        lac: cellNumber(c.lac),
+        tac: cellNumber(c.tac),
+        rnc: cellNumber(c.rnc),
+        bsic: cellNumber(c.bsic),
+        bandwidth: cellNumber(c.bandwidth),
+      })) : []
+    }];
+    db.prepare(`
+      INSERT INTO towers (
+        id, stationId, address, province, lat, lng, operators,
+        mastType, owner, height, notes, source, addedBy, status, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BTMAP', ?, 'APPROVED', ?)
+      ON CONFLICT(id) DO UPDATE SET
+        stationId = excluded.stationId,
+        address = excluded.address,
+        province = excluded.province,
+        lat = excluded.lat,
+        lng = excluded.lng,
+        operators = excluded.operators,
+        mastType = excluded.mastType,
+        owner = excluded.owner,
+        height = excluded.height,
+        notes = excluded.notes,
+        source = 'BTMAP'
+    `).run(
+      newId,
+      clean.stationId || null,
+      clean.address || '',
+      clean.province || '',
+      clean.lat,
+      clean.lng,
+      JSON.stringify(ops),
+      clean.mastType || null,
+      clean.owner || null,
+      clean.height || null,
+      clean.notes || null,
+      userNick,
+      new Date().toISOString()
+    );
+    recordTowerChange(db, {
+      towerId: newId,
+      userNick,
+      changeType: clean.sourceTowerId ? 'UPDATED' : 'CREATED',
+      title: clean.sourceTowerId ? titles.updated : titles.created,
+      description: clean.notes || 'Zaktualizowano dane stacji w bazie BTMap.',
+      diff: {
+        mastType: { old: null, new: clean.mastType || null },
+        height: { old: null, new: clean.height || null },
+        owner: { old: null, new: clean.owner || null }
+      }
+    });
+    return newId;
+  };
+  app.post('/api/submit',requireUser,submitLimit,(req,res)=>{
     const type=req.body.type, data=req.body.data || {};
     if(type==='NEW_STATION'){
       const validation=validateStationSubmission({
@@ -415,66 +553,11 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       };
       const id=randomUUID();
       if (res.locals.user.role === 'ADMIN') {
-        const newId = clean.sourceTowerId ? ('BTMAP_' + clean.sourceTowerId.replace(/^UKE_/, '')) : ('BTMAP_' + randomUUID().slice(0, 12));
-        const ops = [{
-          name: clean.operator,
-          stationIds: clean.stationId ? [clean.stationId] : [],
-          bands: Array.isArray(clean.cells) ? clean.cells.map((c: any) => ({
-            tech: c.tech,
-            band: c.band,
-            pci: c.pci,
-            earfcn: c.earfcn,
-            azimuth: c.azimuth,
-            mode: c.mode || (c.tech === '5G' ? 'NSA' : undefined),
-            isIot: Boolean(c.isIot),
-            cellType: c.cellType || 'macro'
-          })) : []
-        }];
-        db.prepare(`
-          INSERT INTO towers (
-            id, stationId, address, province, lat, lng, operators,
-            mastType, owner, height, notes, source, addedBy, status, createdAt
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BTMAP', ?, 'APPROVED', ?)
-          ON CONFLICT(id) DO UPDATE SET
-            stationId = excluded.stationId,
-            address = excluded.address,
-            province = excluded.province,
-            lat = excluded.lat,
-            lng = excluded.lng,
-            operators = excluded.operators,
-            mastType = excluded.mastType,
-            owner = excluded.owner,
-            height = excluded.height,
-            notes = excluded.notes,
-            source = 'BTMAP'
-        `).run(
-          newId,
-          clean.stationId || null,
-          clean.address || '',
-          clean.province || '',
-          clean.lat,
-          clean.lng,
-          JSON.stringify(ops),
-          clean.mastType || null,
-          clean.owner || null,
-          clean.height || null,
-          clean.notes || null,
-          res.locals.user.nick || 'BTMAP',
-          new Date().toISOString()
-        );
-        db.prepare('INSERT INTO queue(id,type,data,userNick,createdAt,userId,status) VALUES(?,?,?,?,?,?,?)').run(id,'NEW_STATION',JSON.stringify(clean),res.locals.user.nick,new Date().toISOString(),res.locals.user.id,'APPROVED');
-        recordTowerChange(db, {
-          towerId: newId,
-          userNick: res.locals.user.nick || 'BTMAP',
-          changeType: clean.sourceTowerId ? 'UPDATED' : 'CREATED',
-          title: clean.sourceTowerId ? 'Weryfikacja parametrów stacji w BTMap' : 'Utworzenie stacji w bazie BTMap',
-          description: clean.notes || 'Zaktualizowano dane stacji w bazie BTMap.',
-          diff: {
-            mastType: { old: null, new: clean.mastType || null },
-            height: { old: null, new: clean.height || null },
-            owner: { old: null, new: clean.owner || null }
-          }
+        const newId = publishStation(clean, res.locals.user.nick || 'BTMAP', {
+          updated: 'Weryfikacja parametrów stacji w BTMap',
+          created: 'Utworzenie stacji w bazie BTMap',
         });
+        db.prepare('INSERT INTO queue(id,type,data,userNick,createdAt,userId,status) VALUES(?,?,?,?,?,?,?)').run(id,'NEW_STATION',JSON.stringify(clean),res.locals.user.nick,new Date().toISOString(),res.locals.user.id,'APPROVED');
         log(res.locals.user.nick,'NOWA_STACJA_AUTO_APPROVE',id);
         cachedStats=null; invalidateStatsCache();
         return res.status(201).json({id,status:'APPROVED',towerId:newId});
@@ -482,6 +565,20 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
       db.prepare('INSERT INTO queue(id,type,data,userNick,createdAt,userId) VALUES(?,?,?,?,?,?)').run(id,'NEW_STATION',JSON.stringify(clean),res.locals.user.nick,new Date().toISOString(),res.locals.user.id);
       log(res.locals.user.nick,'NOWA_STACJA',id);
       return res.status(201).json({id,status:'PENDING'});
+    }
+    if(type==='NODE_LINK'){
+      const request=cleanNodeLinkRequest(data);
+      if('error' in request) return res.status(400).json({error:request.error});
+      const link=resolveNodeLink(db,request);
+      if('error' in link) return res.status(400).json({error:link.error});
+      const tower=db.prepare('SELECT address,lat,lng FROM towers WHERE id=?').get(link.towerId) as {address:string;lat:number;lng:number};
+      const clean={...link,address:tower.address,lat:tower.lat,lng:tower.lng,notes:text(data.notes,500)};
+      const id=randomUUID();
+      const approved=res.locals.user.role==='ADMIN';
+      if(approved) saveNodeLink(db,link,res.locals.user.nick);
+      db.prepare('INSERT INTO queue(id,type,data,userNick,createdAt,userId,status) VALUES(?,?,?,?,?,?,?)').run(id,'NODE_LINK',JSON.stringify(clean),res.locals.user.nick,new Date().toISOString(),res.locals.user.id,approved?'APPROVED':'PENDING');
+      log(res.locals.user.nick,approved?'POWIAZANIE_NODE_AUTO_APPROVE':'POWIAZANIE_NODE',id);
+      return res.status(201).json({id,status:approved?'APPROVED':'PENDING'});
     }
     if(type!=='REPORT') return res.status(400).json({error:'Nieobsługiwany typ zgłoszenia.'});
     const towerId=text(data.towerId,200), notes=text(data.notes,2000), category=text(data.category,40);
@@ -504,35 +601,50 @@ export function createApp(db: DatabaseSync,si2pem?:ReturnType<typeof createSi2pe
     if(!['APPROVE','REJECT'].includes(req.body.action))return res.status(400).json({error:'Nieprawidłowa decyzja.'});
     db.exec('BEGIN');
     try {
-      // Reviewing a report never changes UKE permit data or creates community stations.
+      // Reviewing a REPORT never changes station data. Approving a NEW_STATION publishes it as a BTMap record.
+      let towerId: string | undefined;
       if(req.body.action==='APPROVE'){
         if(item.type==='TOWER') throw new Error('Starsze zgłoszenie nie jest już obsługiwane.');
+        if(item.type==='NODE_LINK'){
+          // Re-resolved at approval: the station may have changed since the link was submitted.
+          const request=cleanNodeLinkRequest(JSON.parse(String(item.data)));
+          if('error' in request) throw new Error(request.error);
+          const link=resolveNodeLink(db,request);
+          if('error' in link) throw new Error(link.error);
+          saveNodeLink(db,link,String(item.userNick||'Moderator'));
+          if(item.userId) db.prepare('UPDATE users SET points=points+2 WHERE id=?').run(item.userId);
+        }
         if(item.type==='NEW_STATION'){
           const stData=JSON.parse(String(item.data));
-          if(stData.sourceTowerId){
-            db.prepare('UPDATE towers SET mastType=COALESCE(?, mastType), owner=COALESCE(?, owner), notes=COALESCE(?, notes), source="BTMAP" WHERE id=?').run(stData.mastType||null, stData.owner||null, stData.notes||null, stData.sourceTowerId);
-            recordTowerChange(db, {
-              towerId: stData.sourceTowerId,
-              userNick: String(item.userNick || 'Moderator'),
-              changeType: 'UPDATED',
-              title: 'Zatwierdzenie aktualizacji stacji przez moderatora',
-              description: stData.notes || 'Zaktualizowano parametry stacji w bazie BTMap.',
-              diff: {
-                mastType: { old: null, new: stData.mastType || null },
-                owner: { old: null, new: stData.owner || null }
-              }
-            });
-          }
+          towerId=publishStation({
+            operator:text(stData.operator,50),
+            stationId:text(stData.stationId,50),
+            address:text(stData.address,300),
+            province:text(stData.province,50),
+            lat:Number(stData.lat),
+            lng:Number(stData.lng),
+            mastType:text(stData.mastType,100),
+            owner:text(stData.owner,100),
+            height:Number(stData.height)||null,
+            notes:text(stData.notes,2000),
+            cells:stData.cells,
+            sourceTowerId:text(stData.sourceTowerId,200)||null,
+          }, String(item.userNick || 'Moderator'), {
+            updated: 'Zatwierdzenie aktualizacji stacji przez moderatora',
+            created: 'Zatwierdzenie nowej stacji przez moderatora',
+          });
           if(item.userId){
             db.prepare('UPDATE users SET points=points+10 WHERE id=?').run(item.userId);
           }
         }
       }
       db.prepare('UPDATE queue SET status=? WHERE id=?').run(req.body.action==='APPROVE'?'APPROVED':'REJECTED',item.id);
-      log(res.locals.user.nick,req.body.action,String(item.id));db.exec('COMMIT');cachedStats=null;invalidateStatsCache();res.json({ok:true});
+      log(res.locals.user.nick,req.body.action,String(item.id));db.exec('COMMIT');cachedStats=null;invalidateStatsCache();res.json(towerId?{ok:true,towerId}:{ok:true});
     } catch(e){db.exec('ROLLBACK');res.status(400).json({error:(e as Error).message});}
   });
   app.use('/api',(_req,res)=>res.status(404).json({error:'Nie znaleziono tej funkcji API.'}));
-  app.use((error:Error,_req:Request,res:Response,_next:NextFunction)=>{console.error(error.message);res.status(500).json({error:'Nie udało się wykonać operacji. Spróbuj ponownie.'});});
+  app.use((error:Error&{type?:string},_req:Request,res:Response,_next:NextFunction)=>{
+    if(error.type==='entity.too.large')return res.status(413).json({error:'Przesyłane dane są za duże. Zdjęcie może mieć maksymalnie 15 MB.'});
+    console.error(error.message);res.status(500).json({error:'Nie udało się wykonać operacji. Spróbuj ponownie.'});});
   return app;
 }

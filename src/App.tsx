@@ -23,7 +23,7 @@ import {api,formatNumber} from './lib/api';
 import {DEFAULT_FILTERS,OPERATORS,filterCount,readStored,saveStored} from './lib/constants';
 import {getStoredBasemap} from './lib/basemaps';
 import type {BasemapId} from './lib/basemaps';
-import type {Bounds,Filters,Health,Theme,Tower,View} from './types';
+import type {Bounds,Filters,Health,NodeLinkSuggestion,Theme,Tower,View} from './types';
 import {i18n, I18nProvider, type Lang} from './lib/i18n';
 import {AppSettings, DEFAULT_SETTINGS, formatCoordinates, readSettings, saveSettings} from './lib/settings';
 
@@ -90,6 +90,8 @@ export default function App(){
   const [isPickingEvalTarget, setIsPickingEvalTarget] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [highlightedSector, setHighlightedSector] = useState<HighlightedSector | null>(null);
+  const [nodeLinkSuggestion, setNodeLinkSuggestion] = useState<NodeLinkSuggestion | null>(null);
+  const getMapCenter = useCallback(() => { const c = map?.getCenter(); return c ? { lat: c.lat, lng: c.lng } : null; }, [map]);
 
   const openAreaEvaluation = (coords?: [number, number]) => {
     if (coords) {
@@ -276,7 +278,7 @@ export default function App(){
   const filterPanel=<aside className="floating-panel filter-drawer" aria-labelledby="station-filters-title">
     <div className="filter-drawer-heading"><h2 id="station-filters-title">{view==='map'?t.filterMapTitle:t.filterStationTitle}</h2><span className="filter-data-source"><DatabaseZap size={13} aria-hidden="true"/>{filters.source==='UKE'?t.filterSourceUke:filters.source==='BTMAP'?'BTMap':t.filterSourceAll}{showPem&&view==='map'?' · SI2PEM':''}{showRadiolines&&view==='map'?' · Radiolinie':''}</span><button className="icon-button" aria-label={t.close} onClick={()=>setPanel(null)}><X size={18}/></button></div>
     <div className="panel-scroll"><FiltersPanel filters={filters} onChange={changeFilters} pemEnabled={showPem} onPemChange={view==='map'?setShowPem:undefined} pemStatus={pemStatus} azimuthsEnabled={showAzimuths} onAzimuthsChange={view==='map'?setShowAzimuths:undefined} radiolinesEnabled={showRadiolines} onRadiolinesChange={view==='map'?setShowRadiolines:undefined} radiolinesStatus={radiolinesStatus} onlyNewRadiolines={onlyNewRadiolines} onOnlyNewRadiolinesChange={view==='map'?setOnlyNewRadiolines:undefined}/></div>
-    <div className="filter-drawer-footer"><p className="filter-results" role="status">{loading?t.filterLoading:error?t.filterLoadError:<><strong>{formatNumber(result.total)}</strong> {view==='database'?t.filterResultsInDb(formatNumber(result.total)):t.filterResultsInArea(formatNumber(result.total))}</>}</p><div className="filter-drawer-actions"><button className="filter-reset" disabled={!filterTotal} onClick={()=>{changeFilters(DEFAULT_FILTERS);if(view==='map'){setShowPem(false);setShowAzimuths(false);setShowRadiolines(false);}}}><RotateCcw size={14}/>{t.clear}{filterTotal>0&&<span>{filterTotal}</span>}</button><button className="primary-button" onClick={()=>setPanel(null)}>{t.ready}</button></div></div>
+    <div className="filter-drawer-footer"><p className="filter-results" role="status">{loading?t.filterLoading:error?t.filterLoadError:<><strong>{formatNumber(view==='map'?Math.min(result.total, 1000):result.total)}</strong> {view==='database'?t.filterResultsInDb(formatNumber(result.total)):t.filterResultsInArea(formatNumber(Math.min(result.total, 1000)))}</>}</p><div className="filter-drawer-actions"><button className="filter-reset" disabled={!filterTotal} onClick={()=>{changeFilters(DEFAULT_FILTERS);if(view==='map'){setShowPem(false);setShowAzimuths(false);setShowRadiolines(false);}}}><RotateCcw size={14}/>{t.clear}{filterTotal>0&&<span>{filterTotal}</span>}</button><button className="primary-button" onClick={()=>setPanel(null)}>{t.ready}</button></div></div>
   </aside>;
 
   return <I18nProvider lang={lang} setLang={setLang}>
@@ -289,7 +291,7 @@ export default function App(){
       <div className="sidebar-bottom"><a className="sidebar-about" href="/btmap/changelog" title="Changelog" aria-current={view==='changelog'?'page':undefined} onClick={e=>{if(e.button===0&&!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey){e.preventDefault();changeView('changelog');}}}><History size={18}/><span>Changelog</span></a><button className="sidebar-about" title={t.guides} onClick={()=>changeView('guides')}><Info size={18}/><span>{t.guides}</span></button><button className="sidebar-about" title={t.settings} onClick={()=>setDialog('settings')}><SettingsIcon size={18}/><span>{t.settings}</span></button><div className="sidebar-lang-wrap"><button type="button" className="sidebar-about sidebar-lang-compact-btn" onClick={()=>setLang(lang==='pl'?'en':'pl')} title={t.switchLanguage} aria-label={t.switchLanguage}><Languages size={18}/><span className="sidebar-lang-compact-badge">{lang.toUpperCase()}</span></button><div className="sidebar-lang-toggle" title={t.switchLanguage}><Languages size={17} className="sidebar-lang-icon"/><span className="sidebar-lang-text">{t.language}</span><div className="lang-toggle-pills" role="group" aria-label={t.language}><button type="button" className={`lang-pill ${lang==='pl'?'is-active':''}`} onClick={()=>setLang('pl')} aria-pressed={lang==='pl'} title="Polski (PL)">PL</button><button type="button" className={`lang-pill ${lang==='en'?'is-active':''}`} onClick={()=>setLang('en')} aria-pressed={lang==='en'} title="English (ENG)">ENG</button></div></div></div><div className="sidebar-account"><button onClick={()=>setDialog(user?'profile':'auth')} title={user?t.account:t.signIn}><span className="sidebar-avatar">{user?user.nick.slice(0,1).toUpperCase():<UserRound size={19}/>}</span><span><strong>{user?user.nick:t.signIn}</strong><small>{user?t.account:t.accountDesc}</small></span><ArrowUpRight size={16}/></button></div></div>
     </aside>
     <section className="app-main">
-      <header className="workspace-header"><div className="workspace-heading"><button className="icon-button desktop-nav-toggle" aria-label={navCollapsed?t.expandNav:t.collapseNav} onClick={()=>setNavCollapsed(!navCollapsed)}>{navCollapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button><button className="icon-button mobile-nav-toggle" aria-label={t.openNav} onClick={()=>setMobileNav(!mobileNav)}><Menu size={21}/></button><span className="breadcrumb-parent">{view==='changelog'?'BTMap':t.breadcrumbParent}</span><ChevronRight className="breadcrumb-chevron" size={14}/><h1>{viewNames[view]}</h1></div><div className="workspace-actions"><span className="connection-status"><span className={`connection-dot ${healthError?'offline':''}`}/>{healthError?t.noConnection:health?view==='database'?t.btmapStationsCount(formatNumber(health.stats.btmapTowers??0)):t.locationsTotal(formatNumber(health.stats.towers)):t.connecting}</span><button className="icon-button" onClick={()=>setDialog('settings')} aria-label={t.settings} title={t.settings}><SettingsIcon size={19}/></button><button className="icon-button theme-toggle" onClick={()=>setTheme(theme==='dark'?'light':'dark')} aria-label={theme==='dark'?t.themeLight:t.themeDark}>{theme==='dark'?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
+      <header className="workspace-header"><div className="workspace-heading"><button className="icon-button desktop-nav-toggle" aria-label={navCollapsed?t.expandNav:t.collapseNav} onClick={()=>setNavCollapsed(!navCollapsed)}>{navCollapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button><button className="icon-button mobile-nav-toggle" aria-label={t.openNav} onClick={()=>setMobileNav(!mobileNav)}><Menu size={21}/></button><span className="breadcrumb-parent">{view==='changelog'?'BTMap':t.breadcrumbParent}</span><ChevronRight className="breadcrumb-chevron" size={14}/><h1>{viewNames[view]}</h1></div><div className="workspace-actions"><button className="icon-button" onClick={()=>setDialog('settings')} aria-label={t.settings} title={t.settings}><SettingsIcon size={19}/></button><button className="icon-button theme-toggle" onClick={()=>setTheme(theme==='dark'?'light':'dark')} aria-label={theme==='dark'?t.themeLight:t.themeDark}>{theme==='dark'?<Sun size={19}/>:<Moon size={19}/>}</button></div></header>
       <main id="main-content" className="workspace-body" tabIndex={-1}>
         {view==='map'?<div className={`map-workspace ${selected?'has-details':''} ${panel?'has-drawer':''}`} ref={mapFrame}>
           <MapView
@@ -326,6 +328,7 @@ export default function App(){
                 {` (${highlightedSector.azimuth}°)`}
                 {highlightedSector.cellId ? ` · CID ${highlightedSector.cellId}` : ''}
                 {highlightedSector.eci ? ` · ECI ${highlightedSector.eci}` : ''}
+                {highlightedSector.nci ? ` · NCI ${highlightedSector.nci}` : ''}
               </span>
               <button
                 type="button"
@@ -352,11 +355,13 @@ export default function App(){
               <button type="button" className="ae-pick-cancel" onClick={handleCancelEvalPick}>{t.cancel}</button>
             </div>
           )}
-          <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(result.total)}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{filters.source==='UKE'?'UKE':filters.source==='BTMAP'?'BTMap':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
+          <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{filters.source==='UKE'?'UKE':filters.source==='BTMAP'?'BTMap':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
           <div className={`map-searchbar ${isSearchActive ? 'search-active' : ''}`}>
             <Search
-              onSelect={(tower, sector) => {
+              getCenter={getMapCenter}
+              onSelect={(tower, sector, nodeLink) => {
                 selectTower(tower);
+                setNodeLinkSuggestion(nodeLink ?? null);
                 if (sector) {
                   setHighlightedSector({
                     towerId: tower.id,
@@ -386,7 +391,7 @@ export default function App(){
             <div className="map-searchbar-actions">
               <button
                 type="button"
-                className={`filter-trigger ${showRadiolines ? 'selected' : ''}`}
+                className={`filter-trigger is-compactable ${showRadiolines ? 'selected' : ''}`}
                 onClick={() => setShowRadiolines(prev => !prev)}
                 aria-pressed={showRadiolines}
                 aria-label={lang === 'pl' ? 'Linie radiowe UKE' : 'UKE Microwave Links'}
@@ -398,7 +403,7 @@ export default function App(){
               </button>
               <button
                 type="button"
-                className={`filter-trigger ${evalTarget || isPickingEvalTarget ? 'selected' : ''}`}
+                className={`filter-trigger is-compactable ${evalTarget || isPickingEvalTarget ? 'selected' : ''}`}
                 onClick={() => {
                   if (evalTarget || isPickingEvalTarget) {
                     closeAreaEvaluation();
@@ -423,6 +428,7 @@ export default function App(){
                 onClick={()=>togglePanel('filters')}
                 aria-expanded={panel==='filters'}
                 aria-label={t.filters}
+                title={t.filters}
               >
                 <SlidersHorizontal size={17}/>
                 <span>{t.filters}</span>
@@ -430,7 +436,7 @@ export default function App(){
               </button>
               <button
                 type="button"
-                className="filter-trigger"
+                className="filter-trigger is-primary"
                 onClick={() => openCreateStation(null)}
                 aria-label={t.addStation}
                 title={t.addStationTooltip}
@@ -454,7 +460,8 @@ export default function App(){
                     onClick={() => setOnlyNewRadiolines(prev => !prev)}
                     title={lang === 'pl' ? 'Przełącz widok: tylko nowe radiolinie z ostatniego wykazu UKE' : 'Toggle only new microwave links from latest UKE registry'}
                   >
-                    {onlyNewRadiolines ? (lang === 'pl' ? '★ Tylko nowe (774)' : '★ Only new (774)') : (lang === 'pl' ? 'Wszystkie (38k)' : 'All (38k)')}
+                    {onlyNewRadiolines ? (lang === 'pl' ? '★ Tylko nowe' : '★ Only new') : (lang === 'pl' ? 'Wszystkie' : 'All')}
+                    {health?.stats.radiolines && ` (${new Intl.NumberFormat(lang === 'pl' ? 'pl-PL' : 'en', { notation: 'compact' }).format(onlyNewRadiolines ? health.stats.radiolines.new : health.stats.radiolines.total)})`}
                   </button>
                 </div>
               )}
@@ -506,8 +513,8 @@ export default function App(){
           <BasemapPicker value={basemap} onChange={setBasemap}/>
           <div className="map-legend" aria-label={t.legendOperators}>{OPERATORS.slice(0,4).map(op=><button key={op.name} aria-label={`${t.filterOperatorPrefix} ${op.name}`} aria-pressed={filters.operators.includes(op.name)} onClick={()=>changeFilters({...filters,operators:filters.operators.length===1&&filters.operators[0]===op.name?[]:[op.name]})}><i style={{background:op.color}}/>{op.name}</button>)}</div>
           {panel==='filters'&&filterPanel}
-          {panel==='stations'&&<aside className="floating-panel stations-drawer" aria-label={t.stationsInArea}><div className="floating-panel-heading"><div><h2>{t.stationsInArea}</h2><p>{t.databaseViewTitle} · {formatNumber(result.total)} {t.locationsCount}</p></div><button className="icon-button" aria-label={t.close} onClick={()=>setPanel(null)}><X size={19}/></button></div><div className="panel-scroll"><TowerList items={result.items} total={result.total} loading={loading} error={error} selected={selected?.id} onSelect={selectTower} onRetry={()=>setRefresh(r=>r+1)} hasMore={result.hasMore}/></div></aside>}
-          {selected&&<DetailsPanel key={selected.id} tower={selected} onClose={closeTower} onNotice={setNotice} onOpenCreateStation={openCreateStation} onOpenTerrainProfile={openTerrainProfile} onOpenAreaEvaluation={openAreaEvaluation} user={user} onRequireAuth={()=>setDialog('auth')} onSelectTower={(id) => api<Tower>(`/towers/${encodeURIComponent(id)}`).then(selectTower).catch(e => setNotice((e as Error).message))} onSelectSector={(azimuth, sectorNum) => {
+          {panel==='stations'&&<aside className="floating-panel stations-drawer" aria-label={t.stationsInArea}><div className="floating-panel-heading"><div><h2>{t.stationsInArea}</h2><p>{t.databaseViewTitle} · {formatNumber(Math.min(result.total, 1000))} {t.locationsCount}</p></div><button className="icon-button" aria-label={t.close} onClick={()=>setPanel(null)}><X size={19}/></button></div><div className="panel-scroll"><TowerList items={result.items.slice(0, 1000)} total={Math.min(result.total, 1000)} loading={loading} error={error} selected={selected?.id} onSelect={selectTower} onRetry={()=>setRefresh(r=>r+1)} hasMore={result.hasMore}/></div></aside>}
+          {selected&&<DetailsPanel key={selected.id} tower={selected} nodeLinkSuggestion={nodeLinkSuggestion} onClose={closeTower} onNotice={setNotice} onOpenCreateStation={openCreateStation} onOpenTerrainProfile={openTerrainProfile} onOpenAreaEvaluation={openAreaEvaluation} user={user} onRequireAuth={()=>setDialog('auth')} onSelectTower={(id) => api<Tower>(`/towers/${encodeURIComponent(id)}`).then(selectTower).catch(e => setNotice((e as Error).message))} onSelectSector={(azimuth, sectorNum) => {
             setHighlightedSector({
               towerId: selected.id,
               azimuth,

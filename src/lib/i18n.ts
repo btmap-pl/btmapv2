@@ -57,7 +57,7 @@ export const i18n = {
     fullscreenUnavailable: 'Pełny ekran nie jest dostępny w tej przeglądarce.',
     retry: 'Ponów',
     azimuthsZoomHint: 'Azymuty: przybliż mapę (zoom 14+), aby zobaczyć sektory',
-    azimuthsActive: 'Azymuty anten włączone',
+    azimuthsActive: 'Azymuty anten włączone · tylko stacje ze znanymi azymutami (SI2PEM, UKE, zgłoszenia)',
     radiolinesZoomHint: 'Radiolinie: przybliż mapę (zoom 10+), aby wyświetlić',
     radiolinesActive: 'Radiolinie włączone',
     radiolinesCount: (n: number) => `Radiolinie: ${n} w widoku`,
@@ -163,7 +163,7 @@ export const i18n = {
     searchPlaceNotFound: 'Nie znaleziono miejsca. Spróbuj pełnej nazwy miasta lub współrzędnych.',
     searchServiceUnavailable: 'Wyszukiwanie miejsc jest chwilowo niedostępne.',
     searchCellIdHeader: 'Wykryto identyfikator sieci komórkowej',
-    sectorHighlightTitle: 'Wykryty sektor antenowy',
+    sectorHighlightTitle: 'Podświetlony sektor',
     clearSectorHighlight: 'Zamknij podświetlenie sektora',
 
     // Filters
@@ -183,8 +183,8 @@ export const i18n = {
     filterSourceDbDesc: 'Tylko zweryfikowane stacje w bazie BTMap',
     filterSourceUke: 'UKE',
     filterSourceUkeDesc: 'Tylko urzędowe pozwolenia radiowe UKE',
-    filter5gMode: 'Tryb 5G (NSA / SA)',
-    filter5gModeDesc: 'Dostępne tylko dla bazy BTMap (zweryfikowane komórki)',
+    filter5gMode: 'Tryb 5G NR',
+    filter5gModeDesc: 'Stacje z bazy BTMap, przy których komórka 5G ma wpisany wybrany tryb',
     filter5gModeNsa: '5G NSA',
     filter5gModeNsaDesc: 'Non-Standalone (kotwica na LTE)',
     filter5gModeSa: '5G SA',
@@ -312,6 +312,19 @@ export const i18n = {
     guidesA3: 'Głównym źródłem jest ogólnopolska baza stacji BTMap tworzona przez społeczność i administratorów, zintegrowana z państwowym rejestrem pomiarów SI2PEM oraz wykazem pozwoleń radiowych UKE.',
     guidesQ4: 'Co oznaczają pasma?',
     guidesA4: 'Wartość w MHz identyfikuje częstotliwość przypisaną do danej technologii. Parametry urządzenia, warunki radiowe i obciążenie sieci wpływają na faktyczne działanie połączenia. Mapa nie wylicza prędkości ani zasięgu na podstawie samego pozwolenia.',
+
+    // Open Source & Civic RF Data
+    guidesCivicTitle: 'Open Source & Obywatelskie Dane Radiowe (Civic RF)',
+    guidesCivicSubtitle: 'Projekt tworzony na licencji open-source w służbie dobra publicznego i przejrzystości naukowej.',
+    guidesLicenseBadge: 'Licencja MIT',
+    guidesCrowdsourcingTitle: 'Społecznościowy crowdsourcing',
+    guidesCrowdsourcingDesc: 'Weryfikacja stacji bazowych, parametrów anten, azymutów sektorów i pasm 5G C-Band przez społeczność pasjonatów i inżynierów RF.',
+    guidesSi2pemTitle: 'Pomiary PEM z SI2PEM',
+    guidesSi2pemDesc: 'Automatyczna synchronizacja z państwowym systemem SI2PEM (Instytut Łączności) – akredytowane sprawozdania laboratoryjne z pomiarów PEM.',
+    guidesUkeTitle: 'Wykazy pozwoleń UKE',
+    guidesUkeDesc: 'Bieżąca integracja z oficjalnymi rejestrami UKE dla stacji bazowych (GSM/LTE/5G) oraz radiolinii mikrofalowych.',
+    guidesGithubBtn: 'Repozytorium GitHub',
+    guidesIssuesBtn: 'Zgłoś błąd / Issue Tracker',
 
     // Admin View
     adminTitle: 'Moderacja zgłoszeń',
@@ -477,7 +490,7 @@ export const i18n = {
     fullscreenUnavailable: 'Fullscreen is not supported in this browser.',
     retry: 'Retry',
     azimuthsZoomHint: 'Azimuths: zoom in closer (zoom 14+) to see sectors',
-    azimuthsActive: 'Antenna azimuths enabled',
+    azimuthsActive: 'Antenna azimuths enabled · only stations with known azimuths (SI2PEM, UKE, submissions)',
     radiolinesZoomHint: 'Microwave links: zoom in (zoom 10+) to view',
     radiolinesActive: 'Microwave links active',
     radiolinesCount: (n: number) => `Microwave links: ${n} in view`,
@@ -583,7 +596,7 @@ export const i18n = {
     searchPlaceNotFound: 'Location not found. Try a full city name or coordinates.',
     searchServiceUnavailable: 'Place search is temporarily unavailable.',
     searchCellIdHeader: 'Cellular Network Identifier Detected',
-    sectorHighlightTitle: 'Detected Antenna Sector',
+    sectorHighlightTitle: 'Highlighted sector',
     clearSectorHighlight: 'Close sector highlight',
 
     // Filters
@@ -603,8 +616,8 @@ export const i18n = {
     filterSourceDbDesc: 'Only verified stations in BTMap database',
     filterSourceUke: 'UKE',
     filterSourceUkeDesc: 'Only official UKE radio permits',
-    filter5gMode: '5G Mode (NSA / SA)',
-    filter5gModeDesc: 'Available only for BTMap database (verified cells)',
+    filter5gMode: '5G NR mode',
+    filter5gModeDesc: 'BTMap stations with a 5G cell recorded in the selected mode',
     filter5gModeNsa: '5G NSA',
     filter5gModeNsaDesc: 'Non-Standalone (LTE anchor)',
     filter5gModeSa: '5G SA',
@@ -732,6 +745,19 @@ export const i18n = {
     guidesA3: 'The primary source is the nationwide BTMap base station database curated by the community and team, integrated with the state SI2PEM radiation registry and the official UKE radio permit directory.',
     guidesQ4: 'What do the bands mean?',
     guidesA4: 'The MHz value identifies the radio frequency assigned to each technology. Device hardware, RF propagation, and network load determine actual user performance. The map does not estimate speed or range solely from permits.',
+
+    // Open Source & Civic RF Data
+    guidesCivicTitle: 'Open Source & Civic RF Data',
+    guidesCivicSubtitle: 'An open-source initiative dedicated to public civic good and scientific transparency.',
+    guidesLicenseBadge: 'MIT License',
+    guidesCrowdsourcingTitle: 'Community Crowdsourcing',
+    guidesCrowdsourcingDesc: 'Crowdsourced verification of base stations, antenna parameters, sector azimuths, and 5G C-Band allocations by RF enthusiasts and engineers.',
+    guidesSi2pemTitle: 'SI2PEM EMF Lab Measurements',
+    guidesSi2pemDesc: 'Automated synchronization with Poland\'s state SI2PEM system (National Institute of Telecommunications) — accredited laboratory EMF radiation reports.',
+    guidesUkeTitle: 'UKE Regulatory Permits',
+    guidesUkeDesc: 'Continuous integration with UKE telecom registry for cellular base stations (GSM/LTE/5G) and microwave radiolines.',
+    guidesGithubBtn: 'GitHub Repository',
+    guidesIssuesBtn: 'Report Issue / Issue Tracker',
 
     // Admin View
     adminTitle: 'Submissions Moderation',

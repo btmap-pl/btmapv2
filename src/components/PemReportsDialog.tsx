@@ -4,6 +4,7 @@ import type {Tower} from '../types';
 import type {PemAntenna,PemReport} from '../../shared/pem';
 import {formatDate} from '../lib/api';
 import {loadPemPdf} from '../lib/pemCache';
+import {operatorColor} from '../../shared/operators';
 
 type Props={tower:Tower;operator:string;reports:PemReport[];initialReportId:string;onClose:()=>void};
 const num=new Intl.NumberFormat('pl-PL',{maximumFractionDigits:2});
@@ -75,20 +76,32 @@ function clusterAzimuths(rawAngles: number[], thresholdDeg = 14): DirectionClust
   });
 }
 
-function DirectionDiagram({antennas}:{antennas:PemAntenna[]}){
+/** Width of a drawn sector. SI2PEM reports give no beam width, so this is only how a direction is drawn. */
+const SECTOR_DRAW_DEG = 26;
+
+function DirectionDiagram({antennas,color}:{antennas:PemAntenna[];color?:string}){
   const rawAngles = antennas.flatMap(a => (a.azimuth === null ? [] : [a.azimuth]));
   const uniqueAngles = [...new Set(rawAngles)].sort((a, b) => a - b);
-  const clusters = clusterAzimuths(uniqueAngles);
+  const countAt = (angle: number) => rawAngles.filter(a => a === angle).length;
 
-  const cx = 124;
-  const cy = 124;
-  const R = 72;
-  const Rlabel = 91;
+  const size = 240;
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = 78;
+  const polar = (angleDeg: number, r: number) => {
+    const rad = (angleDeg * Math.PI) / 180;
+    return { x: cx + r * Math.sin(rad), y: cy - r * Math.cos(rad) };
+  };
+  const wedge = (angle: number) => {
+    const a = polar(angle - SECTOR_DRAW_DEG / 2, R);
+    const b = polar(angle + SECTOR_DRAW_DEG / 2, R);
+    return `M ${cx} ${cy} L ${a.x} ${a.y} A ${R} ${R} 0 0 1 ${b.x} ${b.y} Z`;
+  };
 
   return (
-    <div className="pem-directions">
+    <div className="pem-directions" style={color ? ({ '--pem-sector': color } as React.CSSProperties) : undefined}>
       <svg
-        viewBox="0 0 248 248"
+        viewBox={`0 0 ${size} ${size}`}
         role="img"
         aria-label={
           uniqueAngles.length
@@ -96,97 +109,67 @@ function DirectionDiagram({antennas}:{antennas:PemAntenna[]}){
             : 'Brak azymutów anten w publicznym zestawieniu'
         }
       >
-        {/* Background dials */}
-        <circle cx={cx} cy={cy} r={R} fill="var(--surface-alt)" stroke="var(--line)" />
-        <circle cx={cx} cy={cy} r={42} fill="none" stroke="var(--line)" strokeDasharray="3 3" />
-        <circle cx={cx} cy={cy} r={18} fill="none" stroke="var(--line)" opacity={0.6} />
+        <circle cx={cx} cy={cy} r={R} className="pem-dial-disc" />
+        <circle cx={cx} cy={cy} r={R * 0.66} className="pem-dial-ring" />
+        <circle cx={cx} cy={cy} r={R * 0.33} className="pem-dial-ring" />
 
-        {/* 12-hour tick marks at 30° */}
-        {Array.from({ length: 12 }, (_, i) => {
-          const angle = (i * Math.PI) / 6;
-          const isCardinal = i % 3 === 0;
-          const r1 = isCardinal ? R - 6 : R - 4;
-          return (
-            <line
-              key={i}
-              x1={cx + r1 * Math.sin(angle)}
-              y1={cy - r1 * Math.cos(angle)}
-              x2={cx + R * Math.sin(angle)}
-              y2={cy - R * Math.cos(angle)}
-              stroke={isCardinal ? 'var(--muted)' : 'var(--faint)'}
-              strokeWidth={isCardinal ? '1.5' : '1'}
-            />
-          );
-        })}
-
-        {/* North marker inside the dial */}
-        <text
-          x={cx}
-          y={cy - R + 14}
-          textAnchor="middle"
-          dominantBaseline="central"
-          fill="var(--muted)"
-          fontSize="10"
-          fontWeight="700"
-          letterSpacing="0.05em"
-        >
-          N
-        </text>
-
-        {/* Individual antenna rays and dots */}
+        {/* Sectors, one per antenna direction */}
         {uniqueAngles.map(angle => {
-          const r = (angle * Math.PI) / 180;
-          const x2 = cx + (R - 1) * Math.sin(r);
-          const y2 = cy - (R - 1) * Math.cos(r);
+          const count = countAt(angle);
           return (
-            <g key={angle}>
-              <line
-                x1={cx}
-                y1={cy}
-                x2={x2}
-                y2={y2}
-                stroke="var(--accent)"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-              <circle cx={x2} cy={y2} r="2.5" fill="var(--accent)" />
-            </g>
+            <path key={angle} d={wedge(angle)} className="pem-dial-sector">
+              <title>{`Azymut ${angle}° · ${count} ${count === 1 ? 'antena' : count < 5 ? 'anteny' : 'anten'}`}</title>
+            </path>
           );
         })}
 
-        {/* Clean clustered / non-overlapping labels */}
-        {clusters.map(cluster => {
-          const rad = (cluster.meanAngle * Math.PI) / 180;
-          const lx = cx + Rlabel * Math.sin(rad);
-          const ly = cy - Rlabel * Math.cos(rad);
+        {/* Ticks just outside the dial every 30° */}
+        {Array.from({ length: 12 }, (_, i) => {
+          const a = polar(i * 30, R + 2);
+          const b = polar(i * 30, R + 7);
+          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="pem-dial-tick" />;
+        })}
+
+        {/* Compass labels: N at the top, degrees every 30° */}
+        {Array.from({ length: 12 }, (_, i) => {
+          const deg = i * 30;
+          // Side labels are wider than tall, so they sit a little further out than top and bottom ones.
+          const p = polar(deg, R + 18 + Math.abs(Math.sin((deg * Math.PI) / 180)) * 7);
           return (
-            <g key={cluster.label}>
-              <title>
-                {`Azymut: ${cluster.angles.join('°, ')}° (${cluster.angles.length} ${
-                  cluster.angles.length === 1 ? 'antena' : 'anteny'
-                })`}
-              </title>
-              <text
-                x={lx}
-                y={ly}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fill="var(--text)"
-                fontSize="9.5"
-                fontWeight="600"
-                style={{ fontVariantNumeric: 'tabular-nums' }}
-              >
-                {cluster.label}
-              </text>
-            </g>
+            <text key={deg} x={p.x} y={p.y} textAnchor="middle" dominantBaseline="central" className={deg === 0 ? 'pem-dial-label is-north' : 'pem-dial-label'}>
+              {deg === 0 ? 'N' : `${deg}°`}
+            </text>
           );
         })}
 
-        {/* Center hub */}
-        <circle cx={cx} cy={cy} r={4} fill="var(--surface-alt)" stroke="var(--line)" />
-        <circle cx={cx} cy={cy} r={2} fill="var(--text)" />
+        <circle cx={cx} cy={cy} r={3.5} className="pem-dial-hub" />
       </svg>
       {!uniqueAngles.length && <p>Brak azymutów w zestawieniu</p>}
+    </div>
+  );
+}
+
+/** Antenna heights as dots on a mast, highest first, with how many antennas hang at each. */
+function HeightsMast({antennas,heights}:{antennas:PemAntenna[];heights:number[]}){
+  const plural = (n: number) => (n === 1 ? 'antena' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'anteny' : 'anten');
+  return (
+    <div className="pem-heights">
+      <h3>Wysokość anten</h3>
+      {heights.length ? (
+        <ul className="pem-mast">
+          {heights.map(h => {
+            const n = antennas.filter(a => a.height === h).length;
+            return (
+              <li key={h}>
+                <strong>{num.format(h)} m</strong>
+                <span>{n} {plural(n)}</span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p>Brak wysokości w zestawieniu</p>
+      )}
     </div>
   );
 }
@@ -218,7 +201,7 @@ export default function PemReportsDialog({tower,operator,reports,initialReportId
         <div className="pem-report-bar"><div><time dateTime={report.date||undefined}>{formatDate(report.date||undefined)}</time>{source?.id===reports[0]?.id&&<span className="pem-report-latest">Najnowszy</span>}<span>{report.laboratory||'SI2PEM'}</span></div><a href={report.downloadUrl} target="_blank" rel="noopener noreferrer">Otwórz PDF<ArrowUpRight size={14}/></a></div>
         <div className="pem-report-choice"><div><strong>{report.number}</strong><span>{report.stationIds.join(' · ')} · {report.operator}</span></div>{reports.length>1&&<label>Wybierz raport<select value={selected} onChange={e=>setSelected(e.target.value)}>{reports.map(r=><option value={r.id} key={r.id}>{formatDate(r.date||undefined)} · {r.number}</option>)}</select></label>}</div>
         {loading?<div className="pem-report-state" role="status"><RefreshCw size={23}/><strong>Odczytywanie anten z PDF SI2PEM…</strong><p>Pobieranie i analiza parametrów z oficjalnego sprawozdania…</p></div>:error?<div className="pem-report-state"><Activity size={25}/><h3>Nie udało się odczytać PDF</h3><p role="alert">{error}</p><button className="secondary-button" onClick={()=>setRetry(n=>n+1)}><RefreshCw size={14}/>Spróbuj ponownie</button></div>:!antennas.length?<div className="pem-report-state"><Radio size={25}/><h3>Nie udało się rozpoznać tabeli anten</h3><p>Dokument ma inny układ lub jest skanem. Parametry możesz sprawdzić przez „Otwórz PDF”.</p></div>:<>
-        <div className="pem-antenna-layout"><aside className="pem-antenna-diagrams" aria-label="Kierunki i wysokości anten"><DirectionDiagram antennas={antennas}/><div className="pem-heights"><h3>Wysokość anten</h3>{heights.length?<div>{heights.map(h=><p key={h}><span className="pem-height-dot"/><strong>{num.format(h)} m</strong><span>{antennas.filter(a=>a.height===h).length} szt.</span></p>)}</div>:<p>Brak wysokości w zestawieniu</p>}</div></aside><section className="pem-antenna-data" aria-label="Parametry anten"><div className="pem-antenna-count">{antennas.length?<><strong>{antennas.length} {antennas.length===1?'antena':'anteny'}</strong><span> · {[...new Set(antennas.map(a=>a.azimuth).filter(a=>a!==null))].length} kierunki</span></>:<strong>Parametry anten</strong>}</div><p className="pem-table-hint">Przesuń tabelę w bok, aby zobaczyć wszystkie parametry.</p><AntennaTable antennas={antennas}/></section></div>
+        <div className="pem-antenna-layout"><aside className="pem-antenna-diagrams" aria-label="Kierunki i wysokości anten"><DirectionDiagram antennas={antennas} color={operatorColor(operator||report?.operator||tower.operators[0]?.name||'')}/><HeightsMast antennas={antennas} heights={heights}/></aside><section className="pem-antenna-data" aria-label="Parametry anten"><div className="pem-antenna-count">{antennas.length?<><strong>{antennas.length} {antennas.length===1?'antena':'anteny'}</strong><span> · {[...new Set(antennas.map(a=>a.azimuth).filter(a=>a!==null))].length} kierunki</span></>:<strong>Parametry anten</strong>}</div><p className="pem-table-hint">Przesuń tabelę w bok, aby zobaczyć wszystkie parametry.</p><AntennaTable antennas={antennas}/></section></div>
         {antennas.some(a=>a.eirpCombined)&&<p className="pem-partial">* EIRP łączne dla pasm danej anteny, zgodnie z oznaczeniem w PDF.</p>}
         </>}
         {!!report.measurements.length&&<details className="pem-report-readings"><summary><Activity size={15}/>Wyniki pomiarów<span>{report.measurements.length} punktów</span><ChevronDown size={15}/></summary><p>Wartości pola w punktach pomiarowych z wybranego sprawozdania.</p><table><thead><tr><th>Punkt</th><th>Natężenie pola</th></tr></thead><tbody>{report.measurements.slice(0,100).map((m,i)=><tr key={`${m.point}-${i}`}><td>{m.point}</td><td>{m.belowSensitivity?'< ':''}{num.format(m.intensity)} V/m{m.belowSensitivity&&<small>poniżej czułości</small>}</td></tr>)}</tbody></table>{report.measurements.length>100&&<p>Pokazano pierwsze 100 punktów. Pełne dane zawiera PDF.</p>}</details>}

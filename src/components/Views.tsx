@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-import {ArrowDownToLine,ArrowLeft,ArrowRight,Check,Database,Info,Radio,Search,ShieldCheck,X} from 'lucide-react';
+import {Activity,ArrowDownToLine,ArrowLeft,ArrowRight,Check,Database,ExternalLink,Github,Info,Radio,Scale,Search,ShieldCheck,X} from 'lucide-react';
 import type {Submission,Tower,TowerResult,User} from '../types';
 import {api,formatDate,formatNumber,post} from '../lib/api';
 import {operatorColor,towerTechs} from '../lib/constants';
@@ -114,6 +114,41 @@ export function GuidesView(){
         <p>{t.guidesSubtitle}</p>
       </div>
     </div>
+    <div className="civic-card">
+      <div className="civic-header">
+        <div className="civic-title-group">
+          <ShieldCheck size={26} className="guide-symbol" />
+          <h2>{t.guidesCivicTitle}</h2>
+        </div>
+        <span className="civic-license-pill"><Scale size={13}/> {t.guidesLicenseBadge}</span>
+      </div>
+      <p className="civic-subtitle">{t.guidesCivicSubtitle}</p>
+      <div className="civic-features-grid">
+        <div className="civic-feature-item">
+          <h3><Radio size={16}/> {t.guidesCrowdsourcingTitle}</h3>
+          <p>{t.guidesCrowdsourcingDesc}</p>
+        </div>
+        <div className="civic-feature-item">
+          <h3><Activity size={16}/> {t.guidesSi2pemTitle}</h3>
+          <p>{t.guidesSi2pemDesc}</p>
+        </div>
+        <div className="civic-feature-item">
+          <h3><Database size={16}/> {t.guidesUkeTitle}</h3>
+          <p>{t.guidesUkeDesc}</p>
+        </div>
+      </div>
+      <div className="civic-actions">
+        <a href="https://github.com/JUreK646/btmapv2" target="_blank" rel="noopener noreferrer" className="civic-button civic-button-primary">
+          <Github size={16}/>
+          <span>{t.guidesGithubBtn}</span>
+          <ExternalLink size={13}/>
+        </a>
+        <a href="https://github.com/JUreK646/btmapv2/issues" target="_blank" rel="noopener noreferrer" className="civic-button civic-button-secondary">
+          <span>{t.guidesIssuesBtn}</span>
+          <ExternalLink size={13}/>
+        </a>
+      </div>
+    </div>
     <article>
       <span className="guide-symbol"><Radio size={27}/></span>
       <h2>{t.guidesQ1}</h2>
@@ -180,12 +215,12 @@ export function AdminView({user,onUpdate}:{user:User;onUpdate:()=>void}){
       <p className="muted">{t.filterLoading}</p>
     ) : items.length ? items.map(item=><article className="moderation-item" key={item.id}>
       <div className="section-label">
-        <span>{item.type==='REPORT' ? t.profileReportItem : item.type==='NEW_STATION' ? t.profileNewStationItem : t.profileOlderItem}</span>
+        <span>{item.type==='REPORT' ? t.profileReportItem : item.type==='NEW_STATION' ? t.profileNewStationItem : item.type==='NODE_LINK' ? 'Przypisanie gNB/eNB' : t.profileOlderItem}</span>
         <span>{formatDate(item.createdAt)}</span>
       </div>
       <h2>{item.data?.address || t.dbNoAddress} {item.data?.stationId ? `(${item.data.stationId})` : ''}</h2>
       <p>{item.userNick} · {item.data?.lat}, {item.data?.lng}</p>
-      <p>{item.type==='NEW_STATION'?`${item.data?.operator} · Maszt: ${item.data?.mastType || '—'} · Komórki: ${item.data?.cells?.length || 0}`:(item.data?.operators?.map((op:any)=>op.name).join(' · ') || '—')}</p>
+      <p>{item.type==='NEW_STATION'?`${item.data?.operator} · Maszt: ${item.data?.mastType || '—'} · Komórki: ${item.data?.cells?.length || 0}`:item.type==='NODE_LINK'?`${item.data?.operator} · ${item.data?.tech==='LTE'?'eNB':'gNB'} ${item.data?.nodeId} → stacja ${item.data?.stationId || item.data?.towerId}`:(item.data?.operators?.map((op:any)=>op.name).join(' · ') || '—')}</p>
       <p>{item.data?.notes}</p>
       {item.type==='NEW_STATION'&&item.data?.cells?.length>0&&(
         <div className="table-scroll">

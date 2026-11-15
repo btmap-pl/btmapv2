@@ -127,7 +127,7 @@ export function ProfileDialog({user,onClose,onLogout,onAdmin}:{user:User;onClose
         {items.map(i=><div key={i.id}>
           <Radio size={17}/>
           <span>
-            <strong>{i.type==='REPORT' ? t.profileReportItem : i.type==='NEW_STATION' ? t.profileNewStationItem : t.profileOlderItem}</strong>
+            <strong>{i.type==='REPORT' ? t.profileReportItem : i.type==='NEW_STATION' ? t.profileNewStationItem : i.type==='NODE_LINK' ? 'Przypisanie gNB/eNB' : t.profileOlderItem}</strong>
             <small>{formatDate(i.createdAt)}</small>
           </span>
           <span className={`status-tag ${i.status.toLowerCase()}`}>

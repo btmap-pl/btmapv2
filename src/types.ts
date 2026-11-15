@@ -1,9 +1,13 @@
 export type Theme = 'light' | 'dark';
 export type View = 'map' | 'database' | 'stats' | 'kmz' | 'guides' | 'admin' | 'changelog' | 'coverage';
-export interface Band { tech:string; band:string; duplex?:'FDD'|'TDD'|string; status?:string; permit?:string; entryDate?:string; sectors?:number; azimuth?:number; azimuths?:number[]; mode?:'NSA'|'SA'; pci?:number; earfcn?:number; isIot?:boolean; cellType?:string; }
-export interface Operator { name:string; color?:string; bands:Band[]; stationIds?:string[]; ukePermitId?:string; }
+export interface Band { tech:string; band:string; duplex?:'FDD'|'TDD'|string; status?:string; permit?:string; entryDate?:string; sectors?:number; azimuth?:number; azimuths?:number[]; mode?:'NSA'|'SA'; pci?:number; earfcn?:number; isIot?:boolean; cellType?:string; isNew?:boolean; }
+export interface Operator { name:string; color?:string; bands:Band[]; stationIds?:string[]; ukePermitId?:string; azimuths?:number[]; }
 export interface PemReportSummary { count:number; partial:boolean; checkedAt:string; }
-export interface Tower { id:string; stationId?:string; address:string; province:string; lat:number; lng:number; operators:Operator[]; source:'BTMAP' | 'UKE' | string; notes?:string; height?:number; mastType?:string; createdAt?:string; pemReportsByOperator?:Record<string,PemReportSummary>; azimuths?:number[]; isNew?:boolean; }
+export interface Tower { id:string; stationId?:string; address:string; province:string; lat:number; lng:number; operators:Operator[]; source:'BTMAP' | 'UKE' | string; notes?:string; height?:number; mastType?:string; createdAt?:string; pemReportsByOperator?:Record<string,PemReportSummary>; azimuths?:number[]; azimuthsSource?:'si2pem'|'verified'|'uke'|'station'|'unknown'; isNew?:boolean; nodeLinks?:NodeLink[]; distanceKm?:number; linkedElsewhere?:boolean; }
+/** An eNB/gNB number linked to a station by the community (UKE does not publish them). */
+export interface NodeLink { operator:string; tech:'5G'|'LTE'; nodeId:number; }
+/** A node from a cell search, offered for linking on a station found only by proximity. */
+export interface NodeLinkSuggestion { towerId:string; operator?:string; tech:'5G'|'LTE'; nodeId:number; }
 export interface Filters { operators:string[]; techs:string[]; bands:string[]; province:string; source?:'ALL'|'BTMAP'|'UKE'; modes5g?:('NSA'|'SA')[]; onlyNew?:boolean; }
 export interface TowerResult { items:Tower[]; total:number; limit:number; hasMore:boolean; }
 export interface Bounds { minLat:number; maxLat:number; minLng:number; maxLng:number; zoom:number; }
@@ -11,7 +15,7 @@ export interface User { id:string; email:string; nick:string; role:string; point
 export interface Comment { id:string; towerId:string; userNick:string; text:string; photoUrl?:string; createdAt:string; }
 export interface Photo { id:string; towerId:string; userNick:string; url:string; caption?:string; createdAt:string; }
 export interface Count { name:string; count:number; }
-export interface Health { status:string; version:string; stats:{ towers:number; btmapTowers?:number; ukeTowers?:number; operators:Count[]; technologies:Count[]; provinces:Count[] }; metadata:Record<string,string>; }
+export interface Health { status:string; version:string; stats:{ towers:number; btmapTowers?:number; ukeTowers?:number; operators:Count[]; technologies:Count[]; provinces:Count[]; radiolines?:{ total:number; new:number } }; metadata:Record<string,string>; newEntries?:{ referenceDate:string; since:string; year:string }; }
 export interface Submission { id:string; type:string; status:string; createdAt:string; userNick?:string; data?:any; }
 export interface RadiolineChannel {
   dir: string;
@@ -226,4 +230,117 @@ export interface TowerHistoryData {
     collocated: CollocatedStation[];
   };
   pem: PemTimelineItem[];
+}
+
+export interface ServingStationInfo {
+  id: string;
+  stationId: string;
+  address: string;
+  operator: string;
+  isNetworks?: boolean;
+  networksPartner?: string;
+  distanceKm: number;
+  antennaHeightM: number;
+  mastType?: string;
+  bestSectorAzimuth: number;
+  bearingDeg: number;
+  sectorDeviationDeg: number;
+  isMainLobe: boolean;
+  isBacklobe: boolean;
+  bands: string[];
+  hasCband5G: boolean;
+  hasLowBand: boolean;
+  hasMidBand: boolean;
+  hasSi2pem: boolean;
+  pemReportDate?: string;
+  pemReportNumber?: string;
+  isLosClear: boolean;
+  obstructionM: number;
+  pathLossDb: number;
+  /** False when the station has no azimuths from a real source; sector fields are then not meaningful. */
+  sectorKnown?: boolean;
+  /** False when the antenna height was assumed for the line-of-sight calculation. */
+  heightKnown?: boolean;
+  /** False when terrain data was unavailable and line of sight could not be checked. */
+  losKnown?: boolean;
+}
+
+export interface OperatorEvaluation {
+  operator: 'Orange' | 'Play' | 'Plus' | 'T-Mobile';
+  /** False when the operator has no station with SI2PEM measurements in range: score and grade mean nothing then. */
+  rated?: boolean;
+  isNetworks?: boolean;
+  score: number;
+  rank: number;
+  grade: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
+  isWinner: boolean;
+  scoreBreakdown: {
+    terrainLos: number;
+    spectrumBands: number;
+    sectorAlignment: number;
+    infrastructure: number;
+  };
+  servingStation: ServingStationInfo | null;
+  /** Stations of the operator (or its NetWorkS! partner) in the UKE registry within the search distance. */
+  stationsCount?: number;
+  /** Of those, stations with an SI2PEM measurement report. */
+  si2pemStationsCount: number;
+  /** Of those, stations without an SI2PEM report (still evaluated). */
+  unverifiedStationsCount: number;
+  pros: string[];
+  cons: string[];
+  verdict: string;
+}
+
+export interface AreaEvaluationResult {
+  center: [number, number];
+  radiusM: number;
+  areaKm2: number;
+  targetName?: string;
+  evaluatedAt: string;
+  bestOperator: 'Orange' | 'Play' | 'Plus' | 'T-Mobile';
+  operators: OperatorEvaluation[];
+  summaryRecommendation: string;
+}
+
+export interface TerrainProfilePoint {
+  distanceKm: number;
+  lat: number;
+  lng: number;
+  elevation: number;
+  clutter: number;
+  curvDrop: number;
+  totalGround: number;
+  rayHeight: number;
+  fresnelRadius: number;
+  isObstacle: boolean;
+}
+
+export interface TerrainProfileResult {
+  distanceKm: number;
+  azimuthDeg: number;
+  elevationAngleDeg: number;
+  txElevation: number;
+  rxElevation: number;
+  txHeight: number;
+  rxHeight: number;
+  txTotalAlt: number;
+  rxTotalAlt: number;
+  points: TerrainProfilePoint[];
+  minElevation: number;
+  maxElevation: number;
+  isObstructed: boolean;
+  obstructionMaxM: number;
+  obstructionDistKm: number;
+  isTerrainObstructed: boolean;
+  isClutterObstructed: boolean;
+  pathLossDb: number;
+  fieldStrengthDbUvM: number;
+  verticalDeviationDeg: number | null;
+  horizontalDeviationDeg: number | null;
+  antennaLossDb?: number;
+  isBacklobe?: boolean;
+  source: string;
+  nmptAvailable: boolean;
+  stepM: number;
 }

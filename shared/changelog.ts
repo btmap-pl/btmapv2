@@ -16,8 +16,63 @@ export interface ChangelogRelease {
 
 export const releases: ChangelogRelease[] = [
   {
-    version: '2.0.3',
+    version: '2.0.4',
     isLatest: true,
+    from: '2026-11-08',
+    to: '2026-11-15',
+    title: 'Wyszukiwanie 5G SA z NetMonstera, stacje Play po gNB/eNB i wysokości anten z Rejestru UKE',
+    summary: 'Wyszukiwarka rozumie komórki 5G SA i LTE wklejone z NetMonstera, stacje Play można odnaleźć po numerze gNB/eNB, wysokości anten pochodzą z Rejestru Urządzeń UKE, a statystyki i formularz zgłoszeń zyskały nowy wygląd.',
+    sections: [
+      {
+        id: 'wyszukiwarka-5g-sa',
+        title: 'Wyszukiwarka komórek 5G SA i LTE',
+        items: [
+          'Zapytania wklejone z NetMonstera: gNB:CID 56680:35, NCI/CI (np. 14510115), prefiks PLMN (260 06) oraz pola ARFCN, PCI, TAC i RSRP.',
+          'Operator i pasmo z ARFCN: w paśmie C (3,4–3,8 GHz) wyszukiwarka sama rozpoznaje operatora z bloku aukcyjnego (Plus, Play, Orange, T-Mobile).',
+          'Lepsza kolejność wyników: najpierw stacje operatora z PLMN/ARFCN i stacje z 5G; poprawione zakresy NR-ARFCN operatorów w paśmie n78.',
+        ],
+      },
+      {
+        id: 'play-gnb-enb',
+        title: 'Stacje Play po numerze gNB / eNB',
+        items: [
+          'Przypisywanie numeru gNB lub eNB z NetMonstera w karcie stacji, z moderacją zgłoszeń i punktami dla autora.',
+          'Przypisanie podąża za identyfikatorem stacji operatora, więc przetrwa kolejne synchronizacje rejestru.',
+          'Gdy numer nie jest jeszcze przypisany, wyszukiwarka pokazuje najbliższe stacje Play/Plus z daną technologią i pasmem wraz z odległością.',
+        ],
+      },
+      {
+        id: 'rejestr-urzadzen-mapa',
+        title: 'Rejestr Urządzeń UKE i mapa',
+        items: [
+          'Import Rejestru Urządzeń UKE (wpisy REJ) i rzeczywiste wysokości anten zamiast wartości zakładanych; azymuty tylko z pozwoleń UKE.',
+          'Usuwanie stacji, których nie ma już w rejestrze, oraz synchronizacja „wszystko albo nic” z prawidłową datą wykazu.',
+          'Wszystkie radiolinie na tej samej trasie w jednym okienku, klikalne kropki stacji pod radioliniami i limit 1000 obiektów w widoku.',
+          'Natychmiastowe podpowiedzi wyszukiwarki (stacje, ulice, miejscowości) i nowy pasek wyszukiwania.',
+        ],
+      },
+      {
+        id: 'statystyki-zgloszenia',
+        title: 'Statystyki, audyt i zgłoszenia',
+        items: [
+          'Nowe widoki statystyk: przyrost sieci, rejestr UKE, radiolinie, baza BTMap i jakość danych, liczone z migawek rejestru.',
+          'Audyt pokrycia ocenia każdą stację UKE; profil terenu bez zgadywania terenu i widoczności.',
+          'Nowy formularz zgłoszenia stacji z logotypami operatorów i właścicieli konstrukcji (m.in. Cellnex / On Tower Poland, PKP PLK, Energa).',
+          'Historia zmian tylko dla stacji BTMap; zatwierdzone zgłoszenia publikowane jako rekordy BTMap.',
+        ],
+      },
+      {
+        id: 'bezpieczenstwo-stabilnosc',
+        title: 'Bezpieczeństwo i stabilność',
+        items: [
+          'Limit prób logowania na adres IP klienta i limit zapisów w API; błędy wewnętrzne nie trafiają do odpowiedzi.',
+          'Kompresja i cache plików statycznych, lżejszy obraz API i bezpieczniejsza synchronizacja SI2PEM.',
+        ],
+      },
+    ],
+  },
+  {
+    version: '2.0.3',
     from: '2026-11-01',
     to: '2026-11-08',
     title: 'Najnowsze wykazy BIP UKE (listopad 2026), pełna baza Plusa, azymuty sektorów i ODU Manager',

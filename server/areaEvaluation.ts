@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { haversineDistanceKm, calculateBearingDeg, calculateTerrainProfile } from './terrainProfile.ts';
 import { withPemCounts, normalizeTower } from './query.ts';
+import { getCachedPdfAzimuths, resolveTowerAzimuths } from './azimuths.ts';
 import type { Tower, Operator } from '../src/types.ts';
 
 export interface AreaEvaluationRequest {
@@ -11,64 +12,8 @@ export interface AreaEvaluationRequest {
   targetName?: string; // Optional building, parcel or address label
 }
 
-export interface ServingStationInfo {
-  id: string;
-  stationId: string;
-  address: string;
-  operator: string;
-  isNetworks?: boolean;
-  networksPartner?: string;
-  distanceKm: number;
-  antennaHeightM: number;
-  mastType?: string;
-  bestSectorAzimuth: number;
-  bearingDeg: number;
-  sectorDeviationDeg: number;
-  isMainLobe: boolean;
-  isBacklobe: boolean;
-  bands: string[];
-  hasCband5G: boolean;
-  hasLowBand: boolean;
-  hasMidBand: boolean;
-  hasSi2pem: boolean;
-  pemReportDate?: string;
-  pemReportNumber?: string;
-  isLosClear: boolean;
-  obstructionM: number;
-  pathLossDb: number;
-}
-
-export interface OperatorEvaluation {
-  operator: 'Orange' | 'Play' | 'Plus' | 'T-Mobile';
-  isNetworks?: boolean;
-  score: number; // 0 - 100
-  rank: number; // 1, 2, 3, 4
-  grade: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
-  isWinner: boolean;
-  scoreBreakdown: {
-    terrainLos: number;      // max 30: LiDAR LOS clearance, path loss, distance
-    spectrumBands: number;   // max 30: low bands (penetration) + mid bands (CA) + 5G C-Band n78
-    sectorAlignment: number; // max 20: physical sector angle deviation from target
-    infrastructure: number;  // max 20: antenna height, SI2PEM verification, station density
-  };
-  servingStation: ServingStationInfo | null;
-  si2pemStationsCount: number;
-  unverifiedStationsCount: number;
-  pros: string[];
-  cons: string[];
-  verdict: string;
-}
-
-export interface AreaEvaluationResult {
-  center: [number, number];
-  radiusM: number;
-  areaKm2: number;
-  targetName?: string;
-  evaluatedAt: string;
-  bestOperator: 'Orange' | 'Play' | 'Plus' | 'T-Mobile';
-  operators: OperatorEvaluation[];
-  summaryRecommendation: string;
-}
+import type { ServingStationInfo, OperatorEvaluation, AreaEvaluationResult } from '../src/types.ts';
+export type { ServingStationInfo, OperatorEvaluation, AreaEvaluationResult };
 
 const MAJOR_OPERATORS = ['Orange', 'Play', 'Plus', 'T-Mobile'] as const;
 type MajorOperator = typeof MAJOR_OPERATORS[number];
@@ -78,29 +23,13 @@ function bandFreqMhz(b: unknown): number {
   return m ? Number(m[0]) : 0;
 }
 
-function parseAntennasFromCache(db: DatabaseSync, towerId: string): { azimuth: number; height: number; bands: string[] }[] {
-  try {
-    // Check if we have cached PDF report with parsed antenna table in pem_pdf_cache
-    const rows = db.prepare('SELECT data FROM pem_pdf_cache WHERE data LIKE ? LIMIT 4').all(`%"${towerId}"%`) as { data: string }[];
-    for (const row of rows) {
-      const parsed = JSON.parse(row.data);
-      if (Array.isArray(parsed.antennas) && parsed.antennas.length > 0) {
-        return parsed.antennas.map((a: any) => ({
-          azimuth: Number(a.azimuth) || 0,
-          height: Number(a.height) || 35,
-          bands: Array.isArray(a.bands) ? a.bands : [],
-        }));
-      }
-    }
-  } catch {
-    // Return empty on parse error
-  }
-  return [];
-}
+/** Half of a category's points, given when the input it needs is unknown, so missing data neither rewards nor punishes. */
+const NEUTRAL = { los: 9, sector: 10, height: 4 };
 
 export async function evaluateAreaCoverage(
   db: DatabaseSync,
-  req: AreaEvaluationRequest
+  req: AreaEvaluationRequest,
+  fetcher: typeof fetch = fetch
 ): Promise<AreaEvaluationResult> {
   const centerLat = Number(req.centerLat);
   const centerLng = Number(req.centerLng);
@@ -132,7 +61,8 @@ export async function evaluateAreaCoverage(
       AND lng BETWEEN ? AND ?
   `).all(minLat, maxLat, minLng, maxLng) as Record<string, unknown>[];
 
-  const towers = withPemCounts(db, rawRows.map(normalizeTower)) as unknown as Tower[];
+  const towers = withPemCounts(db, rawRows.map(row => normalizeTower(row))) as unknown as Tower[];
+  const pdfAzimuths = getCachedPdfAzimuths(db);
 
   // Group candidate stations by operator and evaluate in parallel
   const evaluations: OperatorEvaluation[] = await Promise.all(
@@ -149,9 +79,9 @@ export async function evaluateAreaCoverage(
         return false;
       });
 
-      // STRICT SI2PEM RULE:
-      // Only count stations that have registered SI2PEM reports!
-      const si2pemTowers = opTowers.filter(t => {
+      // Every station of the operator in the UKE registry (permits and device register) is evaluated.
+      // An SI2PEM measurement report is extra confirmation that counts in its favour, not a requirement.
+      const hasPemReport = (t: Tower) => {
         const directSummary = t.pemReportsByOperator?.[opName];
         if (directSummary && directSummary.count > 0) return true;
         if (isNetworksOp) {
@@ -159,15 +89,16 @@ export async function evaluateAreaCoverage(
           if (partnerSummary && partnerSummary.count > 0) return true;
         }
         return false;
-      });
+      };
+      const si2pemTowers = opTowers.filter(hasPemReport);
+      const withoutPemCount = opTowers.length - si2pemTowers.length;
 
-      const unverifiedTowers = opTowers.filter(t => !si2pemTowers.includes(t));
-
-      if (si2pemTowers.length === 0) {
-        // Disqualified operator in this location (no SI2PEM confirmed stations in range)
+      if (opTowers.length === 0) {
+        // Not rated: no station of this operator nearby, so no points and no grade are made up.
         return {
           operator: opName,
-          score: unverifiedTowers.length > 0 ? 15 : 0,
+          rated: false,
+          score: 0,
           rank: 4,
           grade: 'F',
           isWinner: false,
@@ -178,20 +109,16 @@ export async function evaluateAreaCoverage(
             infrastructure: 0,
           },
           servingStation: null,
+          stationsCount: 0,
           si2pemStationsCount: 0,
-          unverifiedStationsCount: unverifiedTowers.length,
+          unverifiedStationsCount: 0,
           pros: [],
-          cons: [
-            'Brak jakiejkolwiek stacji bazowej z potwierdzonymi pomiarami w państwowym systemie SI2PEM w promieniu zasięgu.',
-            ...(unverifiedTowers.length > 0
-              ? [`Wykryto ${unverifiedTowers.length} stacji z papierowymi pozwoleniami UKE, ale bez zarejestrowanych pomiarów SI2PEM (zgodnie z zasadą zero-fikcji stacje te nie są zaliczane).`]
-              : ['Całkowity brak infrastruktury nadawczej w promieniu 7.5 km.']),
-          ],
-          verdict: 'Brak zweryfikowanego zasięgu w SI2PEM — niezalecany w tej lokalizacji.',
+          cons: ['Brak stacji tego operatora w wykazie UKE w promieniu 7,5 km.'],
+          verdict: 'Brak stacji w pobliżu — nie da się ocenić zasięgu.',
         };
       }
 
-    // Evaluate candidate SI2PEM stations for this operator
+    // Evaluate every station of this operator in range
     interface CandidateStation {
       tower: Tower;
       distanceKm: number;
@@ -200,20 +127,23 @@ export async function evaluateAreaCoverage(
       sectorDeviationDeg: number;
       isMainLobe: boolean;
       isBacklobe: boolean;
+      sectorKnown: boolean;
       antennaHeightM: number;
+      heightKnown: boolean;
       bands: string[];
       hasCband5G: boolean;
       hasLowBand: boolean;
       hasMidBand: boolean;
       isNetworksShared: boolean;
       networksPartner?: string;
+      hasSi2pem: boolean;
       pemReportDate?: string;
       pemReportNumber?: string;
     }
 
     const candidates: CandidateStation[] = [];
 
-    for (const t of si2pemTowers) {
+    for (const t of opTowers) {
       const dist = haversineDistanceKm(t.lat, t.lng, centerLat, centerLng);
       if (dist > searchDistKm) continue;
 
@@ -232,42 +162,34 @@ export async function evaluateAreaCoverage(
       const hasLowBand = freqs.some(f => f >= 700 && f <= 950);
       const hasMidBand = freqs.some(f => f >= 1700 && f <= 2700);
 
-      // Antenna height and physical sectors
-      const cachedAntennas = parseAntennasFromCache(db, t.id);
+      // Physical sectors: only azimuths from a real source (SI2PEM report, UKE permit, verified or submitted data).
+      // When a station has none, sector alignment is left unrated instead of assuming a 0°/120°/240° layout.
+      const knownAzimuths = resolveTowerAzimuths(t, pdfAzimuths).azimuths;
+      const sectorKnown = knownAzimuths.length > 0;
       let bestSectorAzimuth = Math.round(bearing);
       let bestDeviation = 0;
 
-      if (cachedAntennas.length > 0) {
+      if (sectorKnown) {
         let minDiff = 999;
-        for (const ant of cachedAntennas) {
-          let diff = Math.abs(ant.azimuth - bearing) % 360;
+        for (const azimuth of knownAzimuths) {
+          let diff = Math.abs(azimuth - bearing) % 360;
           if (diff > 180) diff = 360 - diff;
           if (diff < minDiff) {
             minDiff = diff;
-            bestSectorAzimuth = ant.azimuth;
-            bestDeviation = Math.round(diff * 10) / 10;
-          }
-        }
-      } else {
-        // Standard nominal 3-sector layout (e.g. 0°, 120°, 240° or aligned)
-        const nominalSectors = [0, 120, 240];
-        let minDiff = 999;
-        for (const az of nominalSectors) {
-          let diff = Math.abs(az - bearing) % 360;
-          if (diff > 180) diff = 360 - diff;
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestSectorAzimuth = az;
+            bestSectorAzimuth = azimuth;
             bestDeviation = Math.round(diff * 10) / 10;
           }
         }
       }
 
-      const isMainLobe = bestDeviation <= 35;
-      const isBacklobe = bestDeviation > 90;
-      const antennaHeightM = t.height || 38;
+      const isMainLobe = sectorKnown && bestDeviation <= 35;
+      const isBacklobe = sectorKnown && bestDeviation > 90;
+      const heightKnown = typeof t.height === 'number' && t.height > 0;
+      // Real antenna height only (UKE device register or recorded data); never a typical value.
+      const antennaHeightM = heightKnown ? t.height! : 0;
 
-      const pemSummary = t.pemReportsByOperator?.[opName] || (isNetworksOp ? t.pemReportsByOperator?.[partnerOp] : undefined);
+      const hasSi2pem = hasPemReport(t);
+      const pemSummary = hasSi2pem ? (t.pemReportsByOperator?.[opName] || (isNetworksOp ? t.pemReportsByOperator?.[partnerOp] : undefined)) : undefined;
 
       candidates.push({
         tower: t,
@@ -277,13 +199,16 @@ export async function evaluateAreaCoverage(
         sectorDeviationDeg: bestDeviation,
         isMainLobe,
         isBacklobe,
+        sectorKnown,
         antennaHeightM,
+        heightKnown,
         bands,
         hasCband5G,
         hasLowBand,
         hasMidBand,
         isNetworksShared,
         networksPartner: isNetworksShared ? partnerOp : undefined,
+        hasSi2pem,
         pemReportDate: pemSummary?.checkedAt?.slice(0, 10),
       });
     }
@@ -291,17 +216,19 @@ export async function evaluateAreaCoverage(
     if (candidates.length === 0) {
       return {
         operator: opName,
-        score: 10,
+        rated: false,
+        score: 0,
         rank: 4,
         grade: 'F',
         isWinner: false,
         scoreBreakdown: { terrainLos: 0, spectrumBands: 0, sectorAlignment: 0, infrastructure: 0 },
         servingStation: null,
+        stationsCount: 0,
         si2pemStationsCount: 0,
-        unverifiedStationsCount: unverifiedTowers.length,
+        unverifiedStationsCount: 0,
         pros: [],
-        cons: ['Stacje SI2PEM tego operatora znajdują się poza efektywnym zasięgiem radiowym (> 7.5 km).'],
-        verdict: 'Brak stacji w zasięgu.',
+        cons: ['Stacje tego operatora są dalej niż 7,5 km.'],
+        verdict: 'Brak stacji w pobliżu — nie da się ocenić zasięgu.',
       };
     }
 
@@ -315,11 +242,17 @@ export async function evaluateAreaCoverage(
     const bestCandidate = candidates[0];
 
     // Compute LiDAR terrain profile for the primary serving station
-    let isLosClear = true;
+    let losKnown = true;
+    let isLosClear = false;
     let obstructionM = 0;
-    let pathLossDb = 105;
+    let pathLossDb = 0;
 
-    try {
+    const freeSpaceLossDb = () => Math.round((32.44 + 20 * Math.log10(1800) + 20 * Math.log10(Math.max(0.01, bestCandidate.distanceKm))) * 10) / 10;
+    if (!bestCandidate.heightKnown) {
+      // Line of sight depends on the antenna height; without the real one it is not computed at all.
+      losKnown = false;
+      pathLossDb = freeSpaceLossDb();
+    } else try {
       const profile = await calculateTerrainProfile({
         lat1: bestCandidate.tower.lat,
         lng1: bestCandidate.tower.lng,
@@ -328,19 +261,19 @@ export async function evaluateAreaCoverage(
         txHeight: bestCandidate.antennaHeightM,
         rxHeight: 5,
         freqMhz: 1800,
-        azimuthDeg: bestCandidate.bestSectorAzimuth,
-        tiltDeg: 3,
+        // Antenna pattern loss needs a real sector direction; the tilt is not known for any station, so it is left out.
+        azimuthDeg: bestCandidate.sectorKnown ? bestCandidate.bestSectorAzimuth : undefined,
         sampleCount: 15,
         includeSurface: true,
+        fetcher,
       });
       isLosClear = !profile.isObstructed;
       obstructionM = profile.obstructionMaxM;
       pathLossDb = profile.pathLossDb;
     } catch {
-      // Fallback: estimate clear if under 2km
-      isLosClear = bestCandidate.distanceKm < 2.2;
-      obstructionM = isLosClear ? 0 : 4.5;
-      pathLossDb = Math.round(92 + 20 * Math.log10(Math.max(0.2, bestCandidate.distanceKm)));
+      // No terrain data: line of sight stays unknown. Only free-space loss, which needs no terrain, is reported.
+      losKnown = false;
+      pathLossDb = freeSpaceLossDb();
     }
 
     // ==========================================
@@ -355,7 +288,9 @@ export async function evaluateAreaCoverage(
     else if (bestCandidate.distanceKm < 5.0) terrainLosScore += 4;
     else terrainLosScore += 1;
 
-    if (isLosClear) {
+    if (!losKnown) {
+      terrainLosScore += NEUTRAL.los;
+    } else if (isLosClear) {
       terrainLosScore += 18;
     } else if (obstructionM <= 3.0) {
       terrainLosScore += 11;
@@ -383,7 +318,9 @@ export async function evaluateAreaCoverage(
 
     // 3. Sector Directivity & Orientation (max 20 pts)
     let sectorScore = 0;
-    if (bestCandidate.sectorDeviationDeg <= 25) {
+    if (!bestCandidate.sectorKnown) {
+      sectorScore = NEUTRAL.sector;
+    } else if (bestCandidate.sectorDeviationDeg <= 25) {
       sectorScore = 20; // Full main beam
     } else if (bestCandidate.sectorDeviationDeg <= 45) {
       sectorScore = 16;
@@ -397,16 +334,19 @@ export async function evaluateAreaCoverage(
 
     // 4. Infrastructure & SI2PEM (max 20 pts)
     let infraScore = 0;
-    if (bestCandidate.antennaHeightM >= 45) infraScore += 8;
+    if (!bestCandidate.heightKnown) infraScore += NEUTRAL.height;
+    else if (bestCandidate.antennaHeightM >= 45) infraScore += 8;
     else if (bestCandidate.antennaHeightM >= 35) infraScore += 6;
     else if (bestCandidate.antennaHeightM >= 25) infraScore += 4;
     else infraScore += 2;
 
-    if (si2pemTowers.length >= 3) infraScore += 6; // Redundancy
-    else if (si2pemTowers.length >= 2) infraScore += 4;
+    // Redundancy: further stations of the operator within 3 km can take over when one is busy or down.
+    const nearbyCount = candidates.filter(c => c.distanceKm <= 3).length;
+    if (nearbyCount >= 3) infraScore += 6;
+    else if (nearbyCount >= 2) infraScore += 4;
     else infraScore += 2;
 
-    infraScore += 6; // Confirmed SI2PEM certified measurements
+    if (bestCandidate.hasSi2pem) infraScore += 6; // Its emissions confirmed by an accredited PEM measurement
 
     const totalScore = Math.min(100, Math.max(0, terrainLosScore + spectrumScore + sectorScore + infraScore));
 
@@ -424,14 +364,20 @@ export async function evaluateAreaCoverage(
     }
 
     // Line of sight & Fresnel zone
-    if (isLosClear) {
+    if (!losKnown && bestCandidate.heightKnown) {
+      cons.push('Nie udało się pobrać danych wysokościowych terenu – widoczność optyczna nie została sprawdzona (ocena neutralna).');
+    } else if (!losKnown) {
+      // Said once, under the mast height below.
+    } else if (isLosClear) {
       pros.push(`Czysta widoczność optyczna (LOS) ze stacji ${bestCandidate.tower.stationId || bestCandidate.tower.id} – brak przeszkód w 1. strefie Fresnela.`);
     } else {
       cons.push(`Przeszkoda terenowa/LiDAR na trasie sygnału narusza 1. strefę Fresnela na głębokość ${obstructionM.toFixed(1)} m.`);
     }
 
     // Sector orientation & Directivity
-    if (bestCandidate.sectorDeviationDeg <= 20) {
+    if (!bestCandidate.sectorKnown) {
+      cons.push('Brak danych o azymutach anten tej stacji (SI2PEM / UKE) – ustawienie sektorów nie zostało ocenione (ocena neutralna).');
+    } else if (bestCandidate.sectorDeviationDeg <= 20) {
       pros.push(`Wiązka główna sektora ${bestCandidate.bestSectorAzimuth}° celuje bezpośrednio w ten punkt (odchylenie tylko ${bestCandidate.sectorDeviationDeg}°).`);
     } else if (bestCandidate.sectorDeviationDeg <= 45) {
       pros.push(`Punkt wewnątrz wiązki głównej sektora ${bestCandidate.bestSectorAzimuth}° (kąt ${bestCandidate.sectorDeviationDeg}° od osi anteny).`);
@@ -443,14 +389,14 @@ export async function evaluateAreaCoverage(
 
     // 5G C-Band n78
     if (bestCandidate.hasCband5G) {
-      pros.push('Aktywne pasmo 5G C-Band (3600 MHz n78) w wykazie UKE – gigabitowe transfery i minimalne opóźnienia.');
+      pros.push('Pasmo 5G C-Band (3600 MHz, n78) w wykazie UKE – najszybsza transmisja danych z dostępnych pasm.');
     } else {
-      cons.push('Brak pasma 5G C-Band (3600 MHz n78) na tej stacji – dostępne tylko pasma LTE lub 5G DSS.');
+      cons.push('Brak pasma 5G C-Band (3600 MHz, n78) na tej stacji w wykazie UKE.');
     }
 
     // Low bands (coverage / indoor penetration)
     if (bestCandidate.hasLowBand) {
-      pros.push('Pasma zasięgowe 800/900 MHz gwarantujące stabilny sygnał wewnątrz pomieszczeń.');
+      pros.push('Pasma zasięgowe 800/900 MHz – lepszy odbiór wewnątrz budynków.');
     } else {
       cons.push('Brak pasm zasięgowych 800/900 MHz – utrudniony odbiór w głębi budynków.');
     }
@@ -464,7 +410,9 @@ export async function evaluateAreaCoverage(
     }
 
     // Mast height
-    if (bestCandidate.antennaHeightM >= 45) {
+    if (!bestCandidate.heightKnown) {
+      cons.push('UKE nie podaje wysokości anten tej stacji – widoczność optyczna nie została obliczona (ocena neutralna).');
+    } else if (bestCandidate.antennaHeightM >= 45) {
       pros.push(`Wysoki maszt nadawczy (${bestCandidate.antennaHeightM} m n.p.t.) górujący ponad lokalną zabudową i drzewostanem.`);
     } else if (bestCandidate.antennaHeightM < 25) {
       cons.push(`Niski maszt (${bestCandidate.antennaHeightM} m n.p.t.) narażony na tłumienie przez okoliczne obiekty.`);
@@ -478,7 +426,13 @@ export async function evaluateAreaCoverage(
     }
 
     // Verified SI2PEM report
-    pros.push(`Zweryfikowane laboratoryjne sprawozdanie PEM zarejestrowane w państwowym systemie SI2PEM${bestCandidate.pemReportDate ? ` (${bestCandidate.pemReportDate})` : ''}.`);
+    // pemReportDate is when BTMap last checked SI2PEM, not the date of the report.
+    if (bestCandidate.hasSi2pem) {
+      pros.push(`Stacja ma sprawozdanie z pomiarów PEM w SI2PEM${bestCandidate.pemReportDate ? ` (sprawdzono ${bestCandidate.pemReportDate})` : ''}.`);
+    } else {
+      cons.push('Brak sprawozdania z pomiarów PEM w SI2PEM dla tej stacji – ocena opiera się na wykazie UKE.');
+    }
+    if (nearbyCount >= 3) pros.push(`${nearbyCount} stacje operatora w promieniu 3 km – zapas na wypadek przeciążenia lub awarii jednej z nich.`);
 
     // Grade and Verdict
     let grade: OperatorEvaluation['grade'] = 'C';
@@ -503,6 +457,7 @@ export async function evaluateAreaCoverage(
 
     return {
       operator: opName,
+      rated: true,
       isNetworks: bestCandidate.isNetworksShared || isNetworksOp,
       score: totalScore,
       rank: 1, // Will be sorted below
@@ -533,14 +488,18 @@ export async function evaluateAreaCoverage(
         hasCband5G: bestCandidate.hasCband5G,
         hasLowBand: bestCandidate.hasLowBand,
         hasMidBand: bestCandidate.hasMidBand,
-        hasSi2pem: true,
+        hasSi2pem: bestCandidate.hasSi2pem,
         pemReportDate: bestCandidate.pemReportDate,
         isLosClear,
         obstructionM,
         pathLossDb,
+        sectorKnown: bestCandidate.sectorKnown,
+        heightKnown: bestCandidate.heightKnown,
+        losKnown,
       },
+      stationsCount: opTowers.length,
       si2pemStationsCount: si2pemTowers.length,
-      unverifiedStationsCount: unverifiedTowers.length,
+      unverifiedStationsCount: withoutPemCount,
       pros,
       cons,
       verdict,
@@ -553,11 +512,14 @@ export async function evaluateAreaCoverage(
 
   evaluations.forEach((evalObj, idx) => {
     evalObj.rank = idx + 1;
-    evalObj.isWinner = idx === 0;
+    // An operator without any confirmed station in range cannot "win" the comparison.
+    evalObj.isWinner = idx === 0 && Boolean(evalObj.servingStation);
   });
 
   const winner = evaluations[0];
-  const summaryRecommendation = `Na podstawie analizy ukształtowania terenu LiDAR (NMT/NMPT), wysokości masztów, orientacji sektorów oraz pasm w pozwoleniach UKE i państwowym rejestrze SI2PEM, najlepsze warunki radiowe dla wyznaczonej działki (${areaKm2} km²) zapewnia ${winner.operator} (${winner.score}/100 pkt).`;
+  const summaryRecommendation = !winner.servingStation
+    ? 'W promieniu 7,5 km żaden z czterech operatorów nie ma stacji w wykazie UKE, więc nie da się wskazać najlepszego operatora dla tej lokalizacji.'
+    : `Na podstawie stacji z wykazu UKE (pozwolenia i rejestr urządzeń), ukształtowania terenu LiDAR (NMT/NMPT), wysokości masztów, kierunków sektorów, pasm oraz pomiarów SI2PEM najlepsze warunki radiowe dla wyznaczonego obszaru (${areaKm2} km²) zapewnia ${winner.operator} (${winner.score}/100 pkt).`;
 
   return {
     center: [centerLat, centerLng],

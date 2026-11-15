@@ -23,11 +23,12 @@ import {
   ChevronRight,
   Navigation,
 } from 'lucide-react';
-import type { Tower, Operator, Band, User } from '../types';
+import type { Tower, Operator, Band, User, NodeLinkSuggestion } from '../types';
 import { cachedPemReports, freshPemReports, loadPemReports, pemSummary } from '../lib/pemCache';
 import PemReportsDialog from './PemReportsDialog';
 import PemReportList from './PemReportList';
 import StationComments from './StationComments';
+import NodeLinksSection from './NodeLinksSection';
 import StationHistoryDialog from './StationHistoryDialog';
 import NavigationDialog from './NavigationDialog';
 import { formatDms } from '../lib/geoCoords';
@@ -55,6 +56,7 @@ type Props = {
   user?: User | null;
   onRequireAuth?: () => void;
   onSelectTower?: (towerId: string) => void;
+  nodeLinkSuggestion?: NodeLinkSuggestion | null;
 };
 
 function formatRelativeTime(dateStr?: string | null, isPl = true): string {
@@ -131,6 +133,12 @@ function techGen(tech: string) {
   return { gen: t, label: t };
 }
 
+/** 5G modes entered for these cells (SA first). Empty for registry data, which has no mode. */
+function recordedModes(bands: Band[]): Array<'SA' | 'NSA'> {
+  const modes = new Set(bands.map(b => String(b.mode || '').toUpperCase()));
+  return (['SA', 'NSA'] as const).filter(mode => modes.has(mode));
+}
+
 function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: string) => void }) {
   const { t, lang } = useI18n();
   const isPl = lang === 'pl';
@@ -202,6 +210,12 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                 <span className="cell-tech-count">
                   ({techBands.length} {techBands.length === 1 ? (isPl ? 'pasmo' : 'band') : techBands.length < 5 ? (isPl ? 'pasma' : 'bands') : (isPl ? 'pasm' : 'bands')})
                 </span>
+                {gen.gen === '5G' && recordedModes(techBands).length > 0 && (
+                  <span className="cell-tag cell-tag-5g-mode" title={isPl ? 'Tryb 5G wpisany przy komórkach tej stacji' : '5G mode recorded for the cells of this station'}>
+                    <span>5G</span>
+                    <strong>{recordedModes(techBands).join(' / ')}</strong>
+                  </span>
+                )}
                 {op.stationIds?.[0] && (
                   <span
                     className="cell-tag"
@@ -237,10 +251,9 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                       const permitType = b.permit?.match(/\[([^\]]+)\]/)?.[1] || null;
                       const expMatch = b.permit?.match(/expires\s+(\d{4}-\d{2}-\d{2})/);
                       const wpisMatch = b.entryDate || b.permit?.match(/wpis\s+(\d{4}-\d{2}-\d{2})/)?.[1] || null;
-                      const isNewPermit = Boolean(
-                        (wpisMatch && wpisMatch >= '2026-10-01') ||
-                        (b.permit && (b.permit.includes('/26 [P]') || b.permit.includes('/26 [zmP]') || b.permit.includes('/26 ')))
-                      );
+                      // The server decides what is new, relative to the latest synced UKE registry.
+                      const isNewPermit = Boolean(b.isNew);
+                      const permitYear = b.permit?.match(/\/(\d{2})\s/)?.[1];
                       const expiryDate = expMatch
                         ? expMatch[1].startsWith('2099')
                           ? (isPl ? 'Bezterminowo' : 'Indefinite')
@@ -253,9 +266,13 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                       return (
                         <tr key={idx}>
                           <td className="cell-col-pasmo">
-                            <strong className="cell-pasmo-main">{b.band}</strong>{b.mode && <span className={`cell-mode-tag mode-${b.mode.toLowerCase()}`} title={`Tryb 5G ${b.mode}`}>{b.mode}</span>}
+                            <strong className="cell-pasmo-main">{b.band}</strong>
+                            {/* Only a mode entered for the cell is shown; the UKE registry has none and it is not inferred from the band. */}
+                            {b.mode && (
+                              <span className={`cell-mode-tag mode-${b.mode.toLowerCase()}`} title={`Tryb 5G ${b.mode}`}>{b.mode}</span>
+                            )}
                             {azList.length > 0 && (
-                              <span className="cell-azimuth-tag" title={isPl ? 'Azymuty sektorów (BIP UKE)' : 'Sector azimuths (BIP UKE)'}>
+                              <span className="cell-azimuth-tag" title={isPl ? 'Azymuty sektorów' : 'Sector azimuths'}>
                                 {azList.map(a => `${a}°`).join(' / ')}
                               </span>
                             )}
@@ -275,8 +292,8 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                                   <span className="cell-badge-type">[{permitType}]</span>
                                 )}
                                 {isNewPermit && (
-                                  <span className="cell-badge-new-2026" title={isPl ? 'Nowy wpis / pozwolenie BIP UKE (X–XI 2026)' : 'New BIP UKE entry / permit (Oct–Nov 2026)'}>
-                                    ★ {wpisMatch && wpisMatch >= '2026-10-01' ? wpisMatch : (isPl ? 'Nowe 2026' : 'New 2026')}
+                                  <span className="cell-badge-new-2026" title={isPl ? 'Nowy wpis / pozwolenie w rejestrze BIP UKE' : 'New BIP UKE registry entry / permit'}>
+                                    ★ {wpisMatch || (isPl ? `Nowe${permitYear ? ` 20${permitYear}` : ''}` : `New${permitYear ? ` 20${permitYear}` : ''}`)}
                                   </span>
                                 )}
                                 {b.status && (
@@ -317,6 +334,7 @@ export default function DetailsPanel({
   user,
   onRequireAuth,
   onSelectTower,
+  nodeLinkSuggestion,
 }: Props) {
   const { t, lang } = useI18n();
   const isPl = lang === 'pl';
@@ -403,9 +421,16 @@ export default function DetailsPanel({
       return m ? 2000 + parseInt(m[1], 10) : 0;
     }) || [])
     .reduce((max, y) => Math.max(max, y), 0);
-  const new2026PermitsCount = tower.operators
+  const azimuthSourceLabel = tower.azimuthsSource === 'si2pem'
+    ? (isPl ? 'z raportu SI2PEM' : 'from SI2PEM report')
+    : tower.azimuthsSource === 'verified'
+    ? (isPl ? 'zweryfikowane w terenie' : 'verified on site')
+    : tower.azimuthsSource === 'uke'
+    ? (isPl ? 'z pozwoleń UKE' : 'from UKE permits')
+    : (isPl ? 'ze zgłoszenia terenowego' : 'from field submission');
+  const newPermitsCount = tower.operators
     .flatMap(op => op.bands || [])
-    .filter(b => b.permit && (b.permit.includes('/26 [P]') || b.permit.includes('/26 [zmP]') || b.permit.includes('/26 '))).length;
+    .filter(b => b.isNew).length;
 
   return (
     <aside className="details-panel station-sheet" aria-labelledby="station-sheet-title">
@@ -429,9 +454,9 @@ export default function DetailsPanel({
               <Database size={12} aria-hidden="true" />
               {tower.source === 'BTMAP' ? t.detailsSourceBtmap : t.detailsSourceUke}
             </span>
-            {new2026PermitsCount > 0 && (
-              <span className="station-sheet-new-badge" title={isPl ? `${new2026PermitsCount} nowych pozwoleń UKE / Rejestr z 2026 roku` : `${new2026PermitsCount} new 2026 permits`}>
-                ★ {isPl ? `${new2026PermitsCount} nowych pozwoleń (2026)` : `${new2026PermitsCount} new permits (2026)`}
+            {newPermitsCount > 0 && (
+              <span className="station-sheet-new-badge" title={isPl ? `${newPermitsCount} nowych pozwoleń / wpisów w rejestrze UKE` : `${newPermitsCount} new UKE permits / registry entries`}>
+                ★ {isPl ? `${newPermitsCount} nowych pozwoleń` : `${newPermitsCount} new permits`}
               </span>
             )}
             {tower.operators.some(o => o.name === 'Orange' || o.name === 'T-Mobile') && (
@@ -490,16 +515,18 @@ export default function DetailsPanel({
               <Navigation size={14} />
               <span>{t.detailsNavigate}</span>
             </button>
-            <button
-              type="button"
-              className="header-profile-btn"
-              onClick={() => setHistoryOpen(true)}
-              title={isPl ? "Historia stacji i zmian pozwoleń UKE" : "Station & UKE permit history"}
-              aria-label={isPl ? "Historia stacji i zmian pozwoleń UKE" : "Station & UKE permit history"}
-            >
-              <History size={14} />
-              <span>{isPl ? 'Historia' : 'History'}</span>
-            </button>
+            {tower.source === 'BTMAP' && (
+              <button
+                type="button"
+                className="header-profile-btn"
+                onClick={() => setHistoryOpen(true)}
+                title={isPl ? "Historia zmian stacji w bazie BTMap" : "Station change history in the BTMap database"}
+                aria-label={isPl ? "Historia zmian stacji w bazie BTMap" : "Station change history in the BTMap database"}
+              >
+                <History size={14} />
+                <span>{isPl ? 'Historia' : 'History'}</span>
+              </button>
+            )}
             <button
               className="icon-button"
               onClick={() => void copy('link')}
@@ -537,7 +564,7 @@ export default function DetailsPanel({
             <span key={t}>{technologyNames[t] || t}</span>
           ))}
           {tower.azimuths && tower.azimuths.length > 0 && (
-            <div className="station-azimuths-group" title="Kierunki sektorów anten nadawczych (kliknij, aby podświetlić na mapie)">
+            <div className="station-azimuths-group" title={`${isPl ? 'Kierunki sektorów anten nadawczych' : 'Antenna sector directions'} · ${azimuthSourceLabel} (${isPl ? 'kliknij, aby podświetlić na mapie' : 'click to highlight on the map'})`}>
               <Compass size={11} aria-hidden="true" />
               {tower.azimuths.map((a, idx) => (
                 <button
@@ -550,6 +577,13 @@ export default function DetailsPanel({
                   S{idx + 1}: {a}°
                 </button>
               ))}
+              <small style={{ opacity: 0.75, marginLeft: '4px' }}>{azimuthSourceLabel}</small>
+            </div>
+          )}
+          {tower.azimuthsSource === 'unknown' && (
+            <div className="station-azimuths-group" title={isPl ? 'Azymuty pokazujemy tylko wtedy, gdy pochodzą z raportu SI2PEM, pozwoleń UKE lub zgłoszenia terenowego. Nie są szacowane.' : 'Azimuths are shown only when they come from an SI2PEM report, UKE permits or a field submission. They are never estimated.'}>
+              <Compass size={11} aria-hidden="true" />
+              <small style={{ opacity: 0.75 }}>{isPl ? 'Azymuty: brak danych' : 'Azimuths: no data'}</small>
             </div>
           )}
         </div>
@@ -560,30 +594,24 @@ export default function DetailsPanel({
 
       {/* Main scrollable body with facts and bands */}
       <div className="station-sheet-scroll">
-        {/* Station History Meta Bar */}
-        <button
-          type="button"
-          className="station-history-meta-bar"
-          onClick={() => setHistoryOpen(true)}
-        >
-          <span className="sh-meta-bar-dates">
-            {isPl
-              ? `Utworzono: ${formatRelativeTime(tower.createdAt, true)}`
-              : `Created: ${formatRelativeTime(tower.createdAt, false)}`}
-            {latestPermitYear > 0 && (
-              <>
-                <i className="sh-meta-dot">·</i>
-                {isPl
-                  ? `Ostatnia zmiana UKE: ${latestPermitYear} r.`
-                  : `Latest UKE permit: ${latestPermitYear}`}
-              </>
-            )}
-          </span>
-          <span className="sh-meta-bar-action">
-            <span>{isPl ? 'Oś czasu zmian' : 'Change history'}</span>
-            <ChevronRight size={13} />
-          </span>
-        </button>
+        {/* Change history: only for stations of the BTMap database, and only their changes there */}
+        {tower.source === 'BTMAP' && (
+          <button
+            type="button"
+            className="station-history-meta-bar"
+            onClick={() => setHistoryOpen(true)}
+          >
+            <span className="sh-meta-bar-dates">
+              {isPl
+                ? `Dodano do BTMap: ${formatRelativeTime(tower.createdAt, true)}`
+                : `Added to BTMap: ${formatRelativeTime(tower.createdAt, false)}`}
+            </span>
+            <span className="sh-meta-bar-action">
+              <span>{isPl ? 'Oś czasu zmian' : 'Change history'}</span>
+              <ChevronRight size={13} />
+            </span>
+          </button>
+        )}
 
         <dl className="station-facts">
           <div>
@@ -699,6 +727,15 @@ export default function DetailsPanel({
             ))}
           </section>
         )}
+
+        <NodeLinksSection
+          key={`${tower.id}:${nodeLinkSuggestion?.towerId === tower.id ? nodeLinkSuggestion.nodeId : ''}`}
+          tower={tower}
+          user={user ?? null}
+          onRequireAuth={onRequireAuth || (() => {})}
+          onNotice={onNotice}
+          suggestion={nodeLinkSuggestion?.towerId === tower.id ? nodeLinkSuggestion : null}
+        />
 
         {tower.notes && (
           <section className="station-sheet-notes">

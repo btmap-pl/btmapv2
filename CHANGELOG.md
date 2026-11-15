@@ -1,5 +1,47 @@
 # Changelog BTMap
 
+## v2.0.4 (2026-11-15)
+
+Wyszukiwanie komórek 5G SA prosto z NetMonstera, odnajdywanie stacji Play po gNB/eNB, rzeczywiste wysokości anten z Rejestru Urządzeń UKE, odświeżone statystyki i formularz zgłoszeń oraz seria poprawek synchronizacji, bezpieczeństwa i mapy.
+
+### Wyszukiwarka komórek 5G SA i LTE
+- **Zapytania wklejone z NetMonstera**: wyszukiwarka rozumie `gNB:CID 56680:35`, NCI/CI (np. `14510115`), prefiks PLMN (`260 06`) oraz pola `ARFCN`, `PCI`, `TAC`, `RSRP` – zbędne pola są pomijane, a numer stacji zostaje.
+- **Operator i pasmo z ARFCN**: NR-ARFCN i EARFCN przeliczane są na częstotliwość i pasmo; w paśmie C (3,4–3,8 GHz) wyszukiwarka sama rozpoznaje operatora z bloku aukcyjnego (Plus, Play, Orange, T-Mobile).
+- **Lepsza kolejność wyników**: najpierw stacje operatora z PLMN/ARFCN i stacje z 5G, a przy niejednoznacznym numerze podpowiedź „eNodeB / gNodeB”.
+- **Poprawione zakresy n78**: zakresy NR-ARFCN operatorów w paśmie 3,6 GHz zgodne z rzeczywistym podziałem bloków.
+
+### Stacje Play po numerze gNB / eNB
+- **Przypisywanie gNB/eNB do stacji**: w karcie stacji można przypisać numer gNB lub eNB odczytany z NetMonstera; zgłoszenia przechodzą moderację (administrator zapisuje od razu, autor dostaje punkty).
+- **Trwałe powiązania**: przypisanie podąża za identyfikatorem stacji operatora, więc przetrwa kolejne synchronizacje rejestru.
+- **Najbliższe stacje**: gdy numer nie jest jeszcze przypisany, wyszukiwarka pokazuje najbliższe stacje Play/Plus z daną technologią i pasmem wraz z odległością, a karta stacji podpowiada przypisanie numeru.
+
+### Rejestr Urządzeń UKE i mapa
+- **Import Rejestru Urządzeń (wpisy REJ)** w ramach synchronizacji rejestru oraz **rzeczywiste wysokości anten** zamiast wartości zakładanych.
+- **Azymuty anten tylko z prawdziwych źródeł** – z pozwoleń UKE, bez zgadywania.
+- **Usuwanie stacji, których nie ma już w rejestrze**, synchronizacja „wszystko albo nic” z prawidłową datą wykazu oraz odczyt współrzędnych sieci prywatnych w formacie DDMMSS.
+- **Radiolinie**: wszystkie linie na tej samej trasie w jednym okienku; kropki stacji pozostają klikalne pod radioliniami.
+- **Limit 1000 stacji i radiolinii w widoku** oraz spokojniejsze sektory anten na mapie.
+- **Natychmiastowe podpowiedzi wyszukiwarki**: stacje, ulice i miejscowości; nowy wygląd paska wyszukiwania.
+
+### Statystyki, audyt i analiza
+- **Nowe widoki statystyk**: przyrost sieci, rejestr UKE, radiolinie, baza BTMap i jakość danych; raporty przyrostu liczone z migawek rejestru.
+- **Audyt pokrycia** ocenia każdą stację UKE (pomiary SI2PEM jako dodatkowy atut) i nie ocenia operatorów bez pomiarów.
+- **Profil terenu i analiza** bez zgadywania terenu, sektorów i widoczności; nowy, zwarty układ panelu.
+- **Okno SI2PEM**: czytelniejsza tarcza kierunków anten w kolorach operatora.
+
+### Zgłaszanie stacji i historia
+- **Nowy formularz zgłoszenia stacji**: zaokrąglony wygląd, ostylowane listy wyboru, logotypy operatorów i właścicieli konstrukcji (m.in. Cellnex / On Tower Poland, PKP PLK, Energa).
+- **Historia zmian** tylko dla stacji BTMap i tylko ich zmian w BTMap; wpisy bez daty oznaczone jako nieznane.
+- **Zatwierdzone zgłoszenia** publikowane jako rekordy BTMap; zdjęcia stacji do 15 MB.
+
+### Bezpieczeństwo i stabilność
+- Limit prób logowania na adres IP klienta za proxy nginx oraz limit zapisów w API.
+- Błędy wewnętrzne nie trafiają do odpowiedzi API; serwer kończy pracę po nieobsłużonym wyjątku.
+- Kompresja i cache plików statycznych, lżejszy obraz API, bezpieczniejsze stronicowanie harmonogramu SI2PEM.
+- Standardy społeczności GitHub, polityka bezpieczeństwa, OpenSSF Scorecard, metadane cytowania i rozbudowane testy.
+
+---
+
 ## v2.0.3 (2026-11-08)
 
 Najnowsze wykazy Rejestru Urządzeń BIP UKE (stan na 06.11.2026), kompletna baza stacji i komórek Plusa (Polkomtel), 22 wykazy pozwoleń radiowych UKE, linie radiowe z 26.10.2026, precyzyjne azymuty sektorów anten oraz nowy moduł ODU Manager.
