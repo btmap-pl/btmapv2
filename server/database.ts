@@ -123,6 +123,16 @@ export function openDatabase(
   const queueColumns = db.prepare('PRAGMA table_info(queue)').all();
   if (!queueColumns.some(column => column.name === 'userId')) db.exec('ALTER TABLE queue ADD COLUMN userId TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS queue_user ON queue(userId)');
+  // eNB/gNB numbers reported from the field (NetMonster) for a station. UKE does not publish them, and Play's
+  // station IDs (e.g. GDA1010) cannot be derived from them. A link names the operator's station ID, which survives
+  // registry syncs, and the tower ID for stations without one.
+  db.exec(`CREATE TABLE IF NOT EXISTS node_links (
+    operator TEXT NOT NULL, tech TEXT NOT NULL, nodeId INTEGER NOT NULL,
+    stationId TEXT, towerId TEXT NOT NULL, addedBy TEXT, createdAt TEXT NOT NULL,
+    PRIMARY KEY(operator, tech, nodeId)
+  );
+  CREATE INDEX IF NOT EXISTS node_links_node ON node_links(nodeId);
+  CREATE INDEX IF NOT EXISTS node_links_tower ON node_links(towerId);`);
 
   // Reclassify saved SI2PEM entries without downloading the source again.
   if (!db.prepare("SELECT value FROM metadata WHERE key='pemOperatorColorsV2'").get()) {

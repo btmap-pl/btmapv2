@@ -206,12 +206,14 @@ export const POLISH_BAND_PLAN: BandAllocation[] = [
     channelType: 'NR-ARFCN',
     duplex: 'TDD',
     operatorRanges: {
-      'Plus': { min: 640000, max: 643333, standard: 641666 },
-      'Play': { min: 643334, max: 647333, standard: 645333 },
-      'Orange': { min: 647334, max: 651333, standard: 649000 },
-      'T-Mobile': { min: 651334, max: 655333, standard: 652666 },
+      // NR-ARFCN = 600000 + (f - 3000 MHz) / 0.015 MHz: 3400 MHz = 626667, 3500 = 633333, 3600 = 640000,
+      // 3700 = 646667, 3800 = 653333. Each operator holds one 100 MHz block.
+      'Plus': { min: 626667, max: 633333, standard: 630000 },
+      'Play': { min: 633334, max: 639999, standard: 636667 },
+      'Orange': { min: 640000, max: 646666, standard: 643333 },
+      'T-Mobile': { min: 646667, max: 653333, standard: 650000 },
     },
-    notes: 'Aukcja pasma C 3.6 GHz (bloki 100 MHz po 2023 r.).',
+    notes: 'Aukcja pasma C 3.4–3.8 GHz (bloki 100 MHz od 2023 r.: Plus 3400–3500, Play 3500–3600, Orange 3600–3700, T-Mobile 3700–3800 MHz).',
   },
 
   // --- 3G UMTS (sorted lowest to highest MHz) ---

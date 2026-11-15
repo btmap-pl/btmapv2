@@ -23,7 +23,7 @@ import {api,formatNumber} from './lib/api';
 import {DEFAULT_FILTERS,OPERATORS,filterCount,readStored,saveStored} from './lib/constants';
 import {getStoredBasemap} from './lib/basemaps';
 import type {BasemapId} from './lib/basemaps';
-import type {Bounds,Filters,Health,Theme,Tower,View} from './types';
+import type {Bounds,Filters,Health,NodeLinkSuggestion,Theme,Tower,View} from './types';
 import {i18n, I18nProvider, type Lang} from './lib/i18n';
 import {AppSettings, DEFAULT_SETTINGS, formatCoordinates, readSettings, saveSettings} from './lib/settings';
 
@@ -90,6 +90,8 @@ export default function App(){
   const [isPickingEvalTarget, setIsPickingEvalTarget] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [highlightedSector, setHighlightedSector] = useState<HighlightedSector | null>(null);
+  const [nodeLinkSuggestion, setNodeLinkSuggestion] = useState<NodeLinkSuggestion | null>(null);
+  const getMapCenter = useCallback(() => { const c = map?.getCenter(); return c ? { lat: c.lat, lng: c.lng } : null; }, [map]);
 
   const openAreaEvaluation = (coords?: [number, number]) => {
     if (coords) {
@@ -356,8 +358,10 @@ export default function App(){
           <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{filters.source==='UKE'?'UKE':filters.source==='BTMAP'?'BTMap':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
           <div className={`map-searchbar ${isSearchActive ? 'search-active' : ''}`}>
             <Search
-              onSelect={(tower, sector) => {
+              getCenter={getMapCenter}
+              onSelect={(tower, sector, nodeLink) => {
                 selectTower(tower);
+                setNodeLinkSuggestion(nodeLink ?? null);
                 if (sector) {
                   setHighlightedSector({
                     towerId: tower.id,
@@ -510,7 +514,7 @@ export default function App(){
           <div className="map-legend" aria-label={t.legendOperators}>{OPERATORS.slice(0,4).map(op=><button key={op.name} aria-label={`${t.filterOperatorPrefix} ${op.name}`} aria-pressed={filters.operators.includes(op.name)} onClick={()=>changeFilters({...filters,operators:filters.operators.length===1&&filters.operators[0]===op.name?[]:[op.name]})}><i style={{background:op.color}}/>{op.name}</button>)}</div>
           {panel==='filters'&&filterPanel}
           {panel==='stations'&&<aside className="floating-panel stations-drawer" aria-label={t.stationsInArea}><div className="floating-panel-heading"><div><h2>{t.stationsInArea}</h2><p>{t.databaseViewTitle} · {formatNumber(Math.min(result.total, 1000))} {t.locationsCount}</p></div><button className="icon-button" aria-label={t.close} onClick={()=>setPanel(null)}><X size={19}/></button></div><div className="panel-scroll"><TowerList items={result.items.slice(0, 1000)} total={Math.min(result.total, 1000)} loading={loading} error={error} selected={selected?.id} onSelect={selectTower} onRetry={()=>setRefresh(r=>r+1)} hasMore={result.hasMore}/></div></aside>}
-          {selected&&<DetailsPanel key={selected.id} tower={selected} onClose={closeTower} onNotice={setNotice} onOpenCreateStation={openCreateStation} onOpenTerrainProfile={openTerrainProfile} onOpenAreaEvaluation={openAreaEvaluation} user={user} onRequireAuth={()=>setDialog('auth')} onSelectTower={(id) => api<Tower>(`/towers/${encodeURIComponent(id)}`).then(selectTower).catch(e => setNotice((e as Error).message))} onSelectSector={(azimuth, sectorNum) => {
+          {selected&&<DetailsPanel key={selected.id} tower={selected} nodeLinkSuggestion={nodeLinkSuggestion} onClose={closeTower} onNotice={setNotice} onOpenCreateStation={openCreateStation} onOpenTerrainProfile={openTerrainProfile} onOpenAreaEvaluation={openAreaEvaluation} user={user} onRequireAuth={()=>setDialog('auth')} onSelectTower={(id) => api<Tower>(`/towers/${encodeURIComponent(id)}`).then(selectTower).catch(e => setNotice((e as Error).message))} onSelectSector={(azimuth, sectorNum) => {
             setHighlightedSector({
               towerId: selected.id,
               azimuth,

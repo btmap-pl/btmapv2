@@ -53,7 +53,7 @@ test('a published 5G cell keeps the mode that was entered and is not assumed NSA
     const registration = await fetch(`${base}/auth/register`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: 'mod@example.com', nick: 'Mod', password: 'long-password-123'})});
     const cookie = registration.headers.get('set-cookie')!.split(';')[0];
     db.prepare("UPDATE users SET role='ADMIN'").run();
-    const cell = (extra: object) => ({tech: '5G', band: 'n78', pci: 10, earfcn: 645000, cellId: 1, nodeId: 1234, ...extra});
+    const cell = (extra: object) => ({tech: '5G', band: 'n78', pci: 10, earfcn: 639072, cellId: 1, nodeId: 1234, ...extra});
     const submit = await fetch(`${base}/submit`, {method: 'POST', headers: {'Content-Type': 'application/json', cookie}, body: JSON.stringify({type: 'NEW_STATION', data: {
       operator: 'Play', stationId: 'WAW5G', address: 'Warszawa, Testowa 5', province: 'Mazowieckie', lat: 52.21, lng: 21.01,
       cells: [cell({mode: 'SA'}), cell({pci: 11, cellId: 2}), cell({pci: 12, cellId: 3, mode: 'cokolwiek'})],

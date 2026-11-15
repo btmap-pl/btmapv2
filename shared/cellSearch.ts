@@ -16,6 +16,8 @@ export interface ParsedCellId {
   tac?: number;                 // Tracking Area Code
   rnc?: number;                 // 3G Radio Network Controller
   arfcn?: number;               // (E/NR-)ARFCN when given, e.g. "ARFCN 639072"
+  arfcnMhz?: number;            // downlink frequency of that ARFCN, e.g. 3585.08
+  bands?: string[];             // UKE band labels the ARFCN falls into, e.g. ["3500", "3600"]
   mnc?: string;                 // Polish MNC from a "260 06" / "26006" prefix
   operator?: string;            // operator derived from the MNC, e.g. "Play"
   /**
@@ -36,6 +38,56 @@ const POLISH_MNC_OPERATORS: Record<string, string> = {
   '06': 'Play',
 };
 
+/** UKE band label of a downlink frequency (Polish allocations). C-band is listed as 3500 or 3600 MHz. */
+const DOWNLINK_BANDS: Array<{ min: number; max: number; bands: string[] }> = [
+  { min: 758, max: 788, bands: ['700'] },
+  { min: 791, max: 821, bands: ['800'] },
+  { min: 925, max: 960, bands: ['900'] },
+  { min: 1805, max: 1880, bands: ['1800'] },
+  { min: 2110, max: 2170, bands: ['2100'] },
+  { min: 2570, max: 2690, bands: ['2600'] },
+  { min: 3400, max: 3800, bands: ['3500', '3600'] },
+];
+
+/** C-band blocks of the 2023 auction, one 100 MHz block per operator. */
+const C_BAND_BLOCKS: Array<{ min: number; max: number; operator: string }> = [
+  { min: 3400, max: 3500, operator: 'Plus' },
+  { min: 3500, max: 3600, operator: 'Play' },
+  { min: 3600, max: 3700, operator: 'Orange' },
+  { min: 3700, max: 3800, operator: 'T-Mobile' },
+];
+
+/** LTE EARFCN downlink ranges: [first EARFCN, last EARFCN, first frequency in MHz]. */
+const LTE_EARFCN_BANDS: Array<[number, number, number]> = [
+  [0, 599, 2110], [1200, 1949, 1805], [2750, 3449, 2620], [3450, 3799, 925], [6150, 6449, 791],
+  [9210, 9659, 758], [37750, 38249, 2570],
+];
+
+/** Downlink frequency in MHz of an NR-ARFCN (TS 38.104 global raster) or an LTE EARFCN. */
+export function arfcnToMhz(arfcn: number, nr: boolean): number | null {
+  if (!Number.isInteger(arfcn) || arfcn < 0) return null;
+  if (nr) {
+    if (arfcn < 600000) return arfcn * 0.005;
+    if (arfcn <= 2016666) return 3000 + (arfcn - 600000) * 0.015;
+    return null;
+  }
+  const row = LTE_EARFCN_BANDS.find(([first, last]) => arfcn >= first && arfcn <= last);
+  return row ? row[2] + 0.1 * (arfcn - row[0]) : null;
+}
+
+/** UKE band labels of a downlink frequency, e.g. 3585 MHz -> ["3500", "3600"]. */
+export function bandsForMhz(mhz: number | null | undefined): string[] {
+  if (mhz === null || mhz === undefined) return [];
+  return DOWNLINK_BANDS.find(b => mhz >= b.min && mhz <= b.max)?.bands ?? [];
+}
+
+/** Operator owning a C-band frequency, e.g. 3585 MHz -> "Play". Boundaries belong to the upper block. */
+export function cBandOperator(mhz: number | null | undefined): string | undefined {
+  if (mhz === null || mhz === undefined) return undefined;
+  return C_BAND_BLOCKS.find(b => mhz >= b.min && mhz < b.max)?.operator
+    ?? (mhz === 3800 ? 'T-Mobile' : undefined);
+}
+
 /** Largest 28-bit E-UTRAN cell identity; anything above can only be a 36-bit NR cell identity. */
 const MAX_LTE_ECI = 268435455;
 
@@ -46,6 +98,8 @@ const MIN_NR_ARFCN = 100000;
 const NR_TOKENS = new Set(['5g', 'nr', 'sa', 'nsa', '5gsa', '5gnsa', 'gnb', 'gnodeb', 'nci', 'nrci', 'nrarfcn', '3500', '3600']);
 /** Words that mark a query as 4G LTE. */
 const LTE_TOKENS = new Set(['4g', 'lte', 'enb', 'enodeb', 'eci', 'earfcn']);
+/** Labelled radio fields stripped before a bare identifier is matched, e.g. "ARFCN 639072", "PCI 123", "RSRP -85". */
+const CELL_FIELD_RE = /(?<![\p{L}\p{N}])(?:(?:nr-?|e|u)?arfcn|pci|tac|lac|psc|bsic|s?-?rsrp|s?-?rsrq|s?-?snr|sinr|rssi)\s*[:=]?\s*-?\d+(?:[.,]\d+)?(?:\s*db?m?)?/giu;
 /** Tech tags stripped before a bare identifier is matched, e.g. "14510115 5G SA" -> "14510115". */
 const TECH_TAG_RE = /(?<![\p{L}\p{N}])(?:5g|4g|lte|nr|n?sa|n\d{1,3})(?![\p{L}\p{N}])/giu;
 
@@ -89,7 +143,6 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
   // The prefix is only taken when an identifier of 4+ digits follows, so "26006" or "26006:35" stay node IDs.
   const plmnMatch = raw.match(/^(?:plmn\s*[:=]?\s*)?260[\s-]?(0\d)[\s\/:,;-]+(?=\D*\d{4})/i);
   const mnc = plmnMatch ? plmnMatch[1] : undefined;
-  const operator = mnc ? POLISH_MNC_OPERATORS[mnc] : undefined;
   const body = plmnMatch ? raw.slice(plmnMatch[0].length) : raw;
 
   const tokens = body.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -98,6 +151,11 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
   const arfcnIsNr = arfcn !== undefined && !arfcnMatch![1]?.match(/^[eu]$/i) && arfcn >= MIN_NR_ARFCN;
   const nrHint = arfcnIsNr || tokens.some(t => NR_TOKENS.has(t) || /^n\d{1,3}$/.test(t));
   const lteHint = !nrHint && (tokens.some(t => LTE_TOKENS.has(t)) || /^e$/i.test(arfcnMatch?.[1] ?? ''));
+
+  // The ARFCN gives the band, and in C-band also the operator (each holds its own 100 MHz block).
+  const arfcnMhz = arfcn !== undefined && !/^u$/i.test(arfcnMatch?.[1] ?? '') ? arfcnToMhz(arfcn, arfcnIsNr) : null;
+  const arfcnBands = bandsForMhz(arfcnMhz);
+  const operator = (mnc ? POLISH_MNC_OPERATORS[mnc] : undefined) ?? (arfcnIsNr ? cBandOperator(arfcnMhz) : undefined);
 
   // 1. Check for explicit keywords: eNB, eNodeB, gNB, gNodeB, ECI, NCI, CID, LCID, RNC, TAC, PCI
   const gnbCidMatch = body.match(/(?:\b|_)(?:gnb|gnodeb)(?:[:_\s]*cid)?\s*[:=]?\s*(\d{4,8})\s*[:\/-]\s*(\d{1,4})/i);
@@ -119,7 +177,7 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
 
   // 2. Bare identifiers once tech tags are stripped: "14510115 5G", "5G SA 56680", "56680 35", "56680:35 n78".
   const keywordMatched = gnbCidMatch || enbMatch || gnbMatch || nciMatch || explicitEciMatch || cellIdFallback;
-  const core = keywordMatched ? '' : body.replace(TECH_TAG_RE, ' ').replace(/^[\s,;:\/-]+|[\s,;:\/-]+$/g, '').replace(/\s+/g, ' ');
+  const core = keywordMatched ? '' : body.replace(CELL_FIELD_RE, ' ').replace(TECH_TAG_RE, ' ').replace(/^[\s,;:\/-]+|[\s,;:\/-]+$/g, '').replace(/\s+/g, ' ');
   const plainCiMatch = core.match(/^(\d{7,11})$/);
   const dashPattern = !plainCiMatch
     ? core.match(/^(\d{3,8})\s*[-\/:_]\s*(\d{1,4})$/) || core.match(/^(\d{4,8}) (\d{1,4})$/)
@@ -234,6 +292,8 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
     tac,
     rnc,
     arfcn,
+    arfcnMhz: arfcnMhz === null ? undefined : Math.round(arfcnMhz * 100) / 100,
+    bands: arfcnBands.length ? arfcnBands : undefined,
     mnc,
     operator,
     ambiguousTech: ambiguousTech || undefined,

@@ -180,27 +180,27 @@ test('UKE permit matching for 5G SA C-Band (3500-3600 MHz) with operator band as
   // Verify Polish C-Band auction block allocations (3.4 - 3.8 GHz)
   // Block A (3400-3500 MHz): Plus
   assert.ok(n78Alloc.operatorRanges['Plus']);
-  assert.equal(n78Alloc.operatorRanges['Plus'].min, 640000);
-  assert.equal(n78Alloc.operatorRanges['Plus'].max, 643333);
-  assert.equal(n78Alloc.operatorRanges['Plus'].standard, 641666);
+  assert.equal(n78Alloc.operatorRanges['Plus'].min, 626667);
+  assert.equal(n78Alloc.operatorRanges['Plus'].max, 633333);
+  assert.equal(n78Alloc.operatorRanges['Plus'].standard, 630000);
 
   // Block B (3500-3600 MHz): Play
   assert.ok(n78Alloc.operatorRanges['Play']);
-  assert.equal(n78Alloc.operatorRanges['Play'].min, 643334);
-  assert.equal(n78Alloc.operatorRanges['Play'].max, 647333);
-  assert.equal(n78Alloc.operatorRanges['Play'].standard, 645333);
+  assert.equal(n78Alloc.operatorRanges['Play'].min, 633334);
+  assert.equal(n78Alloc.operatorRanges['Play'].max, 639999);
+  assert.equal(n78Alloc.operatorRanges['Play'].standard, 636667);
 
   // Block C (3600-3700 MHz): Orange
   assert.ok(n78Alloc.operatorRanges['Orange']);
-  assert.equal(n78Alloc.operatorRanges['Orange'].min, 647334);
-  assert.equal(n78Alloc.operatorRanges['Orange'].max, 651333);
-  assert.equal(n78Alloc.operatorRanges['Orange'].standard, 649000);
+  assert.equal(n78Alloc.operatorRanges['Orange'].min, 640000);
+  assert.equal(n78Alloc.operatorRanges['Orange'].max, 646666);
+  assert.equal(n78Alloc.operatorRanges['Orange'].standard, 643333);
 
   // Block D (3700-3800 MHz): T-Mobile
   assert.ok(n78Alloc.operatorRanges['T-Mobile']);
-  assert.equal(n78Alloc.operatorRanges['T-Mobile'].min, 651334);
-  assert.equal(n78Alloc.operatorRanges['T-Mobile'].max, 655333);
-  assert.equal(n78Alloc.operatorRanges['T-Mobile'].standard, 652666);
+  assert.equal(n78Alloc.operatorRanges['T-Mobile'].min, 646667);
+  assert.equal(n78Alloc.operatorRanges['T-Mobile'].max, 653333);
+  assert.equal(n78Alloc.operatorRanges['T-Mobile'].standard, 650000);
 
   // 2. Band lookup helpers for 5G C-Band
   assert.equal(findBandAllocation('5G', '3500')?.bandCode, 'n78');

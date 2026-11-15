@@ -215,12 +215,12 @@ export function AdminView({user,onUpdate}:{user:User;onUpdate:()=>void}){
       <p className="muted">{t.filterLoading}</p>
     ) : items.length ? items.map(item=><article className="moderation-item" key={item.id}>
       <div className="section-label">
-        <span>{item.type==='REPORT' ? t.profileReportItem : item.type==='NEW_STATION' ? t.profileNewStationItem : t.profileOlderItem}</span>
+        <span>{item.type==='REPORT' ? t.profileReportItem : item.type==='NEW_STATION' ? t.profileNewStationItem : item.type==='NODE_LINK' ? 'Przypisanie gNB/eNB' : t.profileOlderItem}</span>
         <span>{formatDate(item.createdAt)}</span>
       </div>
       <h2>{item.data?.address || t.dbNoAddress} {item.data?.stationId ? `(${item.data.stationId})` : ''}</h2>
       <p>{item.userNick} · {item.data?.lat}, {item.data?.lng}</p>
-      <p>{item.type==='NEW_STATION'?`${item.data?.operator} · Maszt: ${item.data?.mastType || '—'} · Komórki: ${item.data?.cells?.length || 0}`:(item.data?.operators?.map((op:any)=>op.name).join(' · ') || '—')}</p>
+      <p>{item.type==='NEW_STATION'?`${item.data?.operator} · Maszt: ${item.data?.mastType || '—'} · Komórki: ${item.data?.cells?.length || 0}`:item.type==='NODE_LINK'?`${item.data?.operator} · ${item.data?.tech==='LTE'?'eNB':'gNB'} ${item.data?.nodeId} → stacja ${item.data?.stationId || item.data?.towerId}`:(item.data?.operators?.map((op:any)=>op.name).join(' · ') || '—')}</p>
       <p>{item.data?.notes}</p>
       {item.type==='NEW_STATION'&&item.data?.cells?.length>0&&(
         <div className="table-scroll">

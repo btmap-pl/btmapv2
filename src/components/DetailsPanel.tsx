@@ -23,11 +23,12 @@ import {
   ChevronRight,
   Navigation,
 } from 'lucide-react';
-import type { Tower, Operator, Band, User } from '../types';
+import type { Tower, Operator, Band, User, NodeLinkSuggestion } from '../types';
 import { cachedPemReports, freshPemReports, loadPemReports, pemSummary } from '../lib/pemCache';
 import PemReportsDialog from './PemReportsDialog';
 import PemReportList from './PemReportList';
 import StationComments from './StationComments';
+import NodeLinksSection from './NodeLinksSection';
 import StationHistoryDialog from './StationHistoryDialog';
 import NavigationDialog from './NavigationDialog';
 import { formatDms } from '../lib/geoCoords';
@@ -55,6 +56,7 @@ type Props = {
   user?: User | null;
   onRequireAuth?: () => void;
   onSelectTower?: (towerId: string) => void;
+  nodeLinkSuggestion?: NodeLinkSuggestion | null;
 };
 
 function formatRelativeTime(dateStr?: string | null, isPl = true): string {
@@ -332,6 +334,7 @@ export default function DetailsPanel({
   user,
   onRequireAuth,
   onSelectTower,
+  nodeLinkSuggestion,
 }: Props) {
   const { t, lang } = useI18n();
   const isPl = lang === 'pl';
@@ -724,6 +727,15 @@ export default function DetailsPanel({
             ))}
           </section>
         )}
+
+        <NodeLinksSection
+          key={`${tower.id}:${nodeLinkSuggestion?.towerId === tower.id ? nodeLinkSuggestion.nodeId : ''}`}
+          tower={tower}
+          user={user ?? null}
+          onRequireAuth={onRequireAuth || (() => {})}
+          onNotice={onNotice}
+          suggestion={nodeLinkSuggestion?.towerId === tower.id ? nodeLinkSuggestion : null}
+        />
 
         {tower.notes && (
           <section className="station-sheet-notes">

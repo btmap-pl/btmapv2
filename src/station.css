@@ -1036,3 +1036,19 @@
   border-color: rgba(16, 185, 129, 0.6);
   color: #6ee7b7;
 }
+
+/* NUMERY gNB / eNB (przypisane przez społeczność) */
+.node-links-section { margin-top:22px; }
+.node-links-list { list-style:none; margin:0 0 10px; padding:0; display:flex; flex-wrap:wrap; gap:8px; }
+.node-links-list li { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border:1px solid var(--line); border-radius:8px; background:var(--surface-alt); font-size:13px; }
+.node-links-list strong { font-variant-numeric:tabular-nums; }
+.node-links-operator { color:var(--muted); font-size:11px; }
+.node-links-empty, .node-links-hint { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 10px; }
+.node-links-hint { color:var(--text); border-left:3px solid var(--accent); padding-left:10px; }
+.node-links-sent { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--accent-text); margin:0; }
+.node-links-form { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; }
+.node-links-form label { display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--muted); min-width:0; }
+.node-links-form select, .node-links-form input { min-height:36px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--text); padding:0 10px; font:inherit; font-size:13px; }
+.node-links-form input { width:120px; font-variant-numeric:tabular-nums; }
+.node-links-form .primary-button { min-height:36px; }
+.node-links-add { display:inline-flex; align-items:center; gap:6px; }

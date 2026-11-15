@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search as SearchIcon, ArrowRight, MapPin, X, Radio, Compass, Navigation } from 'lucide-react';
-import type { Tower, TowerResult } from '../types';
+import type { Tower, TowerResult, NodeLinkSuggestion } from '../types';
 import { api } from '../lib/api';
 import { useI18n } from '../lib/i18n';
-import { parseCellSearch, resolveSectorAzimuth } from '../../shared/cellSearch';
+import { parseCellSearch, resolveSectorAzimuth, type ParsedCellId } from '../../shared/cellSearch';
 
 export interface SectorSelection {
   azimuth: number;
@@ -15,10 +15,34 @@ export interface SectorSelection {
 }
 
 export interface SearchProps {
-  onSelect: (t: Tower, sector?: SectorSelection) => void;
+  onSelect: (t: Tower, sector?: SectorSelection, nodeLink?: NodeLinkSuggestion) => void;
   onPlace: (lat: number, lng: number) => void;
   onError: (message: string) => void;
   onActiveChange?: (active: boolean) => void;
+  /** Where to look for nearby stations when a cell's eNB/gNB is not linked to any station (map centre). */
+  getCenter?: () => { lat: number; lng: number } | null;
+}
+
+/** Operators whose UKE station IDs are not eNB/gNB numbers, so their cells are found by proximity. */
+const PROXIMITY_OPERATORS = ['Play', 'Plus'];
+
+/**
+ * Query for stations near the map centre that may carry the searched cell, or null when the direct search
+ * already found a station of the right operator (or one linked to this node).
+ */
+function nearestQuery(cell: ParsedCellId | null, direct: Tower[], center: { lat: number; lng: number } | null) {
+  if (!cell?.isCellIdQuery || cell.nodeId === undefined || !center) return null;
+  const linked = direct.some(t => t.nodeLinks?.some(l => l.nodeId === cell.nodeId && (!cell.operator || l.operator === cell.operator)));
+  if (linked) return null;
+  const operators = cell.operator ? [cell.operator] : PROXIMITY_OPERATORS;
+  if (direct.some(t => t.operators.some(o => operators.includes(o.name)))) return null;
+  const params = new URLSearchParams({
+    lat: center.lat.toFixed(6), lng: center.lng.toFixed(6), limit: '5', radiusKm: '25',
+    operators: operators.join(','), nodeId: String(cell.nodeId),
+  });
+  if (!cell.ambiguousTech && (cell.type === 'NR' || cell.type === 'LTE')) params.set('techs', cell.type === 'NR' ? '5G' : 'LTE');
+  if (cell.bands?.length) params.set('bands', cell.bands.join(','));
+  return params.toString();
 }
 
 export interface PlaceSuggestion {
@@ -52,11 +76,12 @@ function formatPlaceType(type: string): string {
   }
 }
 
-export default function Search({ onSelect, onPlace, onError, onActiveChange }: SearchProps) {
+export default function Search({ onSelect, onPlace, onError, onActiveChange, getCenter }: SearchProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<Tower[]>([]);
   const [places, setPlaces] = useState<PlaceSuggestion[]>([]);
+  const [nearby, setNearby] = useState<Tower[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,6 +112,7 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
     if (cleanQ.length < 2) {
       setItems([]);
       setPlaces([]);
+      setNearby([]);
       setLoading(false);
       return;
     }
@@ -139,9 +165,20 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
           : Promise.resolve([] as PlaceSuggestion[]));
 
         const [fetchedTowers, fetchedPlaces] = await Promise.all([towersPromise, placesPromise]);
+        // 3. A cell whose eNB/gNB is not linked to a station (Play, Plus): nearest candidates instead.
+        const nearestParams = nearestQuery(parsedCell, fetchedTowers, getCenter?.() ?? null);
+        const fetchedNearby = nearestParams
+          ? await api<{ items: Tower[] }>(`/towers/nearest?${nearestParams}`, { signal: abort.signal })
+              .then(r => r.items)
+              .catch(e => {
+                if (e.name === 'AbortError') throw e;
+                return [] as Tower[];
+              })
+          : [];
         if (!abort.signal.aborted) {
           setItems(fetchedTowers);
           setPlaces(fetchedPlaces);
+          setNearby(fetchedNearby);
           setLoading(false);
         }
       } catch (e) {
@@ -155,7 +192,7 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
       clearTimeout(timer);
       abort.abort();
     };
-  }, [query, parsedCell]);
+  }, [query, parsedCell, getCenter]);
 
   const dismissSearch = () => {
     setOpen(false);
@@ -163,9 +200,15 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
     inputRef.current?.blur();
   };
 
-  const handleSelect = (tower: Tower, sector?: SectorSelection) => {
-    onSelect(tower, sector);
+  const handleSelect = (tower: Tower, sector?: SectorSelection, nodeLink?: NodeLinkSuggestion) => {
+    onSelect(tower, sector, nodeLink);
     dismissSearch();
+  };
+
+  const nodeLinkFor = (tower: Tower): NodeLinkSuggestion | undefined => {
+    if (!parsedCell || parsedCell.nodeId === undefined) return undefined;
+    const operator = parsedCell.operator ?? tower.operators.find(o => PROXIMITY_OPERATORS.includes(o.name))?.name;
+    return { towerId: tower.id, operator, tech: parsedCell.type === 'LTE' && !parsedCell.ambiguousTech ? 'LTE' : '5G', nodeId: parsedCell.nodeId };
   };
 
   const handleSelectPlace = (place: PlaceSuggestion) => {
@@ -202,6 +245,10 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
           }
         }
         handleSelect(items[0], sectorSelection);
+        return;
+      }
+      if (nearby.length) {
+        handleSelect(nearby[0], undefined, nodeLinkFor(nearby[0]));
         return;
       }
       if (places.length) {
@@ -350,6 +397,38 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
             </>
           )}
 
+          {/* Najbliższe stacje, gdy numer gNB/eNB nie jest jeszcze przypisany do stacji */}
+          {nearby.length > 0 && parsedCell && (
+            <>
+              <span className="search-label" style={{ marginTop: items.length > 0 ? '6px' : '0' }}>
+                {parsedCell.type === 'LTE' && !parsedCell.ambiguousTech ? 'eNB' : 'gNB'} {parsedCell.nodeId} nie jest przypisany – najbliższe stacje{' '}
+                {parsedCell.operator ?? PROXIMITY_OPERATORS.join(' / ')}
+                {parsedCell.bands?.length ? ` z pasmem ${parsedCell.bands.join('/')} MHz` : ''} (od środka mapy):
+              </span>
+              {nearby.map(tower => (
+                <button
+                  key={tower.id}
+                  type="button"
+                  className="search-tower-item search-nearby-item"
+                  onClick={() => handleSelect(tower, undefined, nodeLinkFor(tower))}
+                >
+                  <Compass size={16} style={{ color: 'var(--accent, #2582eb)' }} />
+                  <span>
+                    <strong className="search-tower-title">
+                      {tower.address || t.dbNoAddress}
+                      <span className="search-place-type-pill">{tower.distanceKm?.toFixed(1)} km</span>
+                    </strong>
+                    <small>
+                      {tower.operators.map(o => o.name).join(' · ')} · {tower.stationId || tower.id}
+                      {tower.linkedElsewhere ? ' · ma już inny przypisany numer' : ''}
+                    </small>
+                  </span>
+                  <ArrowRight size={14} />
+                </button>
+              ))}
+            </>
+          )}
+
           {/* Miejscowości i ulice section */}
           {places.length > 0 && (
             <>
@@ -377,11 +456,11 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
             </>
           )}
 
-          {loading && items.length === 0 && places.length === 0 && (
+          {loading && items.length === 0 && places.length === 0 && nearby.length === 0 && (
             <span className="search-label">{t.filterLoading}</span>
           )}
 
-          {!loading && items.length === 0 && places.length === 0 && (
+          {!loading && items.length === 0 && places.length === 0 && nearby.length === 0 && (
             <span className="search-label">
               {parsedCell?.isCellIdQuery
                 ? 'Nie znaleziono stacji dla tego numeru eNodeB/CID'

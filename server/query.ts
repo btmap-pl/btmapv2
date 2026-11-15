@@ -40,6 +40,23 @@ function isNewTower(t: Record<string, unknown>, operators: unknown, window: NewE
   return operators.some(op => Array.isArray(op?.bands) && op.bands.some((b: Record<string, unknown>) => b && isNewBand(b, window, { newPermitsOnly: true })));
 }
 
+/**
+ * SQL that is true when tower `alias` is linked to a node number (bound as the first parameter, then the
+ * operator when given). A link follows the operator's station ID, so it survives a registry sync that moves
+ * or re-creates the tower record.
+ */
+export function linkedTowerSql(alias = 't', withOperator = false) {
+  return `EXISTS (
+    SELECT 1 FROM node_links nl
+    WHERE nl.nodeId = ?${withOperator ? ' AND nl.operator = ?' : ''}
+      AND (nl.towerId = ${alias}.id OR (nl.stationId IS NOT NULL AND EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_valid(${alias}.operators) THEN ${alias}.operators ELSE '[]' END) lo,
+          json_each(CASE WHEN json_type(lo.value, '$.stationIds') = 'array' THEN json_extract(lo.value, '$.stationIds') ELSE '[]' END) ls
+        WHERE json_extract(lo.value, '$.name') = nl.operator AND ls.value = nl.stationId
+      )))
+  )`;
+}
+
 export function towerWhere(query: Record<string, unknown>, window: NewEntryWindow = newEntryWindow()) {
   const clauses = ["t.status = 'APPROVED'", 't.lat BETWEEN -90 AND 90', 't.lng BETWEEN -180 AND 180'];
   const params: SQLInputValue[] = [];
@@ -82,7 +99,9 @@ export function towerWhere(query: Record<string, unknown>, window: NewEntryWindo
       const wildBoth = '%' + enb + '%';
       const cleanAddress = `%${rawQ.replace(/[!%_]/g, '!$&')}%`;
 
+      // A station linked to this eNB/gNB number by the community (the only way to find Play by gNB).
       clauses.push(`(
+        ${linkedTowerSql('t', Boolean(cellSearch.operator))} OR
         fold(t.stationId) = fold(?) OR
         fold(t.stationId) = fold(?) OR
         fold(t.stationId) LIKE fold(?) OR
@@ -91,6 +110,8 @@ export function towerWhere(query: Record<string, unknown>, window: NewEntryWindo
         fold(t.id) LIKE fold(?) OR
         fold(t.address) LIKE fold(?) ESCAPE '!'
       )`);
+      params.push(Number(enb));
+      if (cellSearch.operator) params.push(cellSearch.operator);
       params.push(enb, btEnb, wildSuffix, wildPrefix, wildBoth, wildBoth, cleanAddress);
     } else {
       clauses.push("(fold(t.address) LIKE fold(?) ESCAPE '!' OR fold(t.stationId) LIKE fold(?) ESCAPE '!' OR fold(t.id) LIKE fold(?) ESCAPE '!' OR fold(t.operators) LIKE fold(?) ESCAPE '!')");
@@ -223,6 +244,7 @@ export function getTowers(db: DatabaseSync, query: Record<string, unknown>) {
         ) THEN 0 ELSE 1 END`
       : '';
     orderSql = `${operatorRank}CASE
+      WHEN ${linkedTowerSql('t', Boolean(cellSearch.operator))} THEN 0
       WHEN fold(t.stationId) = fold(?) THEN 1
       WHEN fold(t.stationId) = fold(?) THEN 2
       WHEN fold(t.stationId) LIKE fold(?) THEN 3
@@ -230,6 +252,8 @@ export function getTowers(db: DatabaseSync, query: Record<string, unknown>) {
       WHEN fold(t.operators) LIKE fold(?) THEN 5
       ELSE 6
     END${nrRank}, t.address, t.id`;
+    if (cellSearch.operator) orderParams.push(cellSearch.operator);
+    orderParams.push(Number(enb));
     if (cellSearch.operator) orderParams.push(cellSearch.operator);
     orderParams.push(enb, btEnb, playPattern, wildSuffix, wildBoth);
     if (cellSearch.type === 'NR' && cellSearch.operator) orderParams.push(cellSearch.operator);

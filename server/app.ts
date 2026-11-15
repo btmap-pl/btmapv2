@@ -22,6 +22,7 @@ import {evaluateAreaCoverage} from './areaEvaluation.ts';
 import {getTelecomStats, invalidateStatsCache, warmStatsCache} from './stats.ts';
 import {getTowerHistory, recordTowerChange} from './towerHistory.ts';
 import {getKmzCatalog, generateKmzArchive} from './kmzExport.ts';
+import {cleanNodeLinkRequest, resolveNodeLink, saveNodeLink, withNodeLinks, getNearestTowers} from './nodeLinks.ts';
 
 type User = { id: string; email: string; nick: string; role: string; points: number; level: number };
 const publicUser = (user: Record<string, unknown>) => ({ id:user.id, email:user.email, nick:user.nick, role:user.role, points:user.points, level:user.level });
@@ -175,7 +176,9 @@ export function createApp(
       serverError(res, e, 'Błąd generowania pliku KMZ.');
     }
   });
-  app.get('/api/towers',(req,res)=>{try{res.json(getTowers(db,req.query));}catch(e){res.status(400).json({error:(e as Error).message});}});
+  app.get('/api/towers',(req,res)=>{try{const result=getTowers(db,req.query);res.json(req.query.q?{...result,items:withNodeLinks(db,result.items)}:result);}catch(e){res.status(400).json({error:(e as Error).message});}});
+  // Stations near a point that may carry a cell whose eNB/gNB is not linked yet (see server/nodeLinks.ts).
+  app.get('/api/towers/nearest',(req,res)=>{try{res.json({items:getNearestTowers(db,req.query)});}catch(e){res.status(400).json({error:(e as Error).message});}});
   app.get('/api/pem-plans',(req,res)=>{try{res.json(pemPlans.query(req.query));}catch(e){res.status(400).json({error:(e as Error).message});}});
   app.get('/api/terrain-profile', terrainLimit, async (req, res) => {
     try {
@@ -246,7 +249,8 @@ export function createApp(
     if(!db.prepare("SELECT id FROM towers WHERE id=?  AND status='APPROVED'").get(String(req.params.id))) return res.status(404).json({error:'Nie znaleziono stacji w bazie.'});
     next();
   });
-  app.get('/api/towers/:id',(req,res)=>{const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'});res.json(withAzimuths(db,withPemCounts(db,[normalizeTower(row,getNewEntryWindow(db))]))[0]);});
+  app.get('/api/towers/:id',(req,res)=>{const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'});res.json(withNodeLinks(db,withAzimuths(db,withPemCounts(db,[normalizeTower(row,getNewEntryWindow(db))])))[0]);});
+  app.get('/api/towers/:id/node-links',(req,res)=>{const row=db.prepare("SELECT id,stationId,operators FROM towers WHERE id=? AND status='APPROVED'").get(String(req.params.id)); if(!row)return res.status(404).json({error:'Nie znaleziono stacji.'}); res.json((withNodeLinks(db,[row])[0] as {nodeLinks?:unknown[]}).nodeLinks??[]);});
   app.get('/api/towers/:id/pem-reports',async(req,res)=>{
     const row=db.prepare("SELECT * FROM towers WHERE id=? AND status='APPROVED' ").get(String(req.params.id));
     if(!row)return res.status(404).json({error:'Nie znaleziono stacji w bazie.'});
@@ -562,6 +566,20 @@ export function createApp(
       log(res.locals.user.nick,'NOWA_STACJA',id);
       return res.status(201).json({id,status:'PENDING'});
     }
+    if(type==='NODE_LINK'){
+      const request=cleanNodeLinkRequest(data);
+      if('error' in request) return res.status(400).json({error:request.error});
+      const link=resolveNodeLink(db,request);
+      if('error' in link) return res.status(400).json({error:link.error});
+      const tower=db.prepare('SELECT address,lat,lng FROM towers WHERE id=?').get(link.towerId) as {address:string;lat:number;lng:number};
+      const clean={...link,address:tower.address,lat:tower.lat,lng:tower.lng,notes:text(data.notes,500)};
+      const id=randomUUID();
+      const approved=res.locals.user.role==='ADMIN';
+      if(approved) saveNodeLink(db,link,res.locals.user.nick);
+      db.prepare('INSERT INTO queue(id,type,data,userNick,createdAt,userId,status) VALUES(?,?,?,?,?,?,?)').run(id,'NODE_LINK',JSON.stringify(clean),res.locals.user.nick,new Date().toISOString(),res.locals.user.id,approved?'APPROVED':'PENDING');
+      log(res.locals.user.nick,approved?'POWIAZANIE_NODE_AUTO_APPROVE':'POWIAZANIE_NODE',id);
+      return res.status(201).json({id,status:approved?'APPROVED':'PENDING'});
+    }
     if(type!=='REPORT') return res.status(400).json({error:'Nieobsługiwany typ zgłoszenia.'});
     const towerId=text(data.towerId,200), notes=text(data.notes,2000), category=text(data.category,40);
     const tower=db.prepare("SELECT * FROM towers WHERE id=?  AND status='APPROVED'").get(towerId);
@@ -587,6 +605,15 @@ export function createApp(
       let towerId: string | undefined;
       if(req.body.action==='APPROVE'){
         if(item.type==='TOWER') throw new Error('Starsze zgłoszenie nie jest już obsługiwane.');
+        if(item.type==='NODE_LINK'){
+          // Re-resolved at approval: the station may have changed since the link was submitted.
+          const request=cleanNodeLinkRequest(JSON.parse(String(item.data)));
+          if('error' in request) throw new Error(request.error);
+          const link=resolveNodeLink(db,request);
+          if('error' in link) throw new Error(link.error);
+          saveNodeLink(db,link,String(item.userNick||'Moderator'));
+          if(item.userId) db.prepare('UPDATE users SET points=points+2 WHERE id=?').run(item.userId);
+        }
         if(item.type==='NEW_STATION'){
           const stData=JSON.parse(String(item.data));
           towerId=publishStation({
