@@ -326,6 +326,7 @@ export default function App(){
                 {` (${highlightedSector.azimuth}°)`}
                 {highlightedSector.cellId ? ` · CID ${highlightedSector.cellId}` : ''}
                 {highlightedSector.eci ? ` · ECI ${highlightedSector.eci}` : ''}
+                {highlightedSector.nci ? ` · NCI ${highlightedSector.nci}` : ''}
               </span>
               <button
                 type="button"

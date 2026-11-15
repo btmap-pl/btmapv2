@@ -313,6 +313,7 @@ export interface HighlightedSector {
   sectorNum?: number;
   cellId?: number;
   eci?: number;
+  nci?: number;
   label?: string;
 }
 

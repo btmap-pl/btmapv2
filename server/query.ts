@@ -208,15 +208,31 @@ export function getTowers(db: DatabaseSync, query: Record<string, unknown>) {
     const playPattern = '___' + enb;
     const wildSuffix = '%' + enb;
     const wildBoth = '%' + enb + '%';
-    orderSql = `CASE
+    // eNB and gNB numbers repeat across operators, so the operator from a "260 06" prefix ranks first, and
+    // a 5G cell query prefers stations that hold a 5G permit.
+    const operatorRank = cellSearch.operator
+      ? `CASE WHEN EXISTS (
+          SELECT 1 FROM json_each(CASE WHEN json_valid(t.operators) THEN t.operators ELSE '[]' END) sop
+          WHERE json_extract(sop.value, '$.name') = ?
+        ) THEN 0 ELSE 1 END, `
+      : '';
+    const nrRank = cellSearch.type === 'NR'
+      ? `, CASE WHEN EXISTS (
+          SELECT 1 FROM json_each(CASE WHEN json_valid(t.operators) THEN t.operators ELSE '[]' END) nop, json_each(nop.value, '$.bands') nrb
+          WHERE json_extract(nrb.value, '$.tech') IN ('5G', 'NR')${cellSearch.operator ? " AND json_extract(nop.value, '$.name') = ?" : ''}
+        ) THEN 0 ELSE 1 END`
+      : '';
+    orderSql = `${operatorRank}CASE
       WHEN fold(t.stationId) = fold(?) THEN 1
       WHEN fold(t.stationId) = fold(?) THEN 2
       WHEN fold(t.stationId) LIKE fold(?) THEN 3
       WHEN fold(t.stationId) LIKE fold(?) THEN 4
       WHEN fold(t.operators) LIKE fold(?) THEN 5
       ELSE 6
-    END, t.address, t.id`;
+    END${nrRank}, t.address, t.id`;
+    if (cellSearch.operator) orderParams.push(cellSearch.operator);
     orderParams.push(enb, btEnb, playPattern, wildSuffix, wildBoth);
+    if (cellSearch.type === 'NR' && cellSearch.operator) orderParams.push(cellSearch.operator);
   } else if (query.q) {
     const rawQ = String(query.q).slice(0, 150).trim();
     const exactPrefix = `${rawQ}%`;

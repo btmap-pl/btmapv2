@@ -335,3 +335,103 @@ test('UKE permit matching for 5G SA C-Band (3500-3600 MHz) with operator band as
     db.close();
   }
 });
+
+test('5G SA queries copied from NetMonster', () => {
+  // Play 5G SA n78 cell: CI 14510115, gNB:CID 56680:35, TAC 1420, PCI 123, ARFCN 639072.
+  for (const q of ['14510115 5G', '5G 14510115', 'NR 14510115', '14510115 5G SA', '14510115 n78', 'ARFCN 639072 CI 14510115']) {
+    const parsed = parseCellSearch(q);
+    assert.ok(parsed, `Failed to parse: ${q}`);
+    assert.equal(parsed.type, 'NR', q);
+    assert.equal(parsed.nodeId, 56680, q);
+    assert.equal(parsed.cellId, 35, q);
+    assert.equal(parsed.nci, 14510115, q);
+    assert.equal(parsed.eci, undefined, q);
+  }
+
+  const pasted = parseCellSearch('CI\t14510115\ngNB:CID\t56680:35\nTAC\t1420\nPCI\t123\nARFCN\t639072');
+  assert.ok(pasted);
+  assert.equal(pasted.type, 'NR');
+  assert.equal(pasted.nodeId, 56680);
+  assert.equal(pasted.cellId, 35);
+  assert.equal(pasted.tac, 1420);
+  assert.equal(pasted.pci, 123);
+  assert.equal(pasted.arfcn, 639072);
+
+  // gNB only, tagged as 5G SA
+  for (const q of ['5G SA 56680', '56680 sa', '56680 5G']) {
+    const parsed = parseCellSearch(q);
+    assert.ok(parsed, q);
+    assert.equal(parsed.type, 'NR', q);
+    assert.equal(parsed.nodeId, 56680, q);
+  }
+
+  // gNB and cell separated by a space
+  const spaced = parseCellSearch('56680 35 5G');
+  assert.ok(spaced);
+  assert.equal(spaced.type, 'NR');
+  assert.equal(spaced.nodeId, 56680);
+  assert.equal(spaced.cellId, 35);
+
+  // PLMN prefix picks the operator
+  const withPlmn = parseCellSearch('260 06 56680:35 5G');
+  assert.ok(withPlmn);
+  assert.equal(withPlmn.mnc, '06');
+  assert.equal(withPlmn.operator, 'Play');
+  assert.equal(withPlmn.nodeId, 56680);
+  assert.equal(withPlmn.nci, 14510115);
+  assert.ok(withPlmn.displaySummary.startsWith('Play · gNodeB 56680'));
+  assert.equal(parseCellSearch('26006 14510115')?.operator, 'Play');
+  // ...but a bare five-digit number or "26006:35" is still a station / node ID
+  assert.equal(parseCellSearch('26006')?.nodeId, 26006);
+  assert.equal(parseCellSearch('26006:35')?.nodeId, 26006);
+
+  // A bare CI is the same number for LTE and 5G: both identities are kept and the tech is flagged as ambiguous.
+  const bare = parseCellSearch('CI 14510115');
+  assert.ok(bare);
+  assert.equal(bare.ambiguousTech, true);
+  assert.equal(bare.eci, 14510115);
+  assert.equal(bare.nci, 14510115);
+  assert.equal(parseCellSearch('ECI 14510115')?.ambiguousTech, undefined);
+  assert.equal(parseCellSearch('LTE 14510115')?.ambiguousTech, undefined);
+
+  // Identities above the 28-bit ECI range can only be NR.
+  const big = parseCellSearch('58055131139');
+  assert.ok(big);
+  assert.equal(big.type, 'NR');
+  assert.equal(big.nci, 58055131139);
+
+  // Band numbers inside an identifier no longer flip it to 5G (used to match the substring "3500").
+  assert.equal(parseCellSearch('14535001')?.type, 'LTE');
+  // LTE EARFCN keeps a cell LTE.
+  assert.equal(parseCellSearch('EARFCN 1850 CI 14510115')?.type, 'LTE');
+  // Addresses are not cell IDs.
+  assert.equal(parseCellSearch('Marszałkowska 3500'), null);
+});
+
+test('5G cell search ranks 5G stations and the PLMN operator first', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const insert = db.prepare(`
+      INSERT INTO towers (id, stationId, address, province, lat, lng, operators, source, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED')
+    `);
+    insert.run('a-orange-lte', '56680', 'Aaa, Orange 1', 'Mazowieckie', 52.1, 21.0,
+      JSON.stringify([{ name: 'Orange', bands: [{ tech: 'LTE', band: '1800' }] }]), 'UKE');
+    insert.run('b-play-5g', '56680', 'Bbb, Play 1', 'Mazowieckie', 52.2, 21.0,
+      JSON.stringify([{ name: 'Play', bands: [{ tech: '5G', band: '3500' }] }]), 'UKE');
+    insert.run('c-tmobile-5g', '56680', 'Ccc, T-Mobile 1', 'Mazowieckie', 52.3, 21.0,
+      JSON.stringify([{ name: 'T-Mobile', bands: [{ tech: '5G', band: '3600' }] }]), 'UKE');
+
+    // Without hints the address order applies.
+    assert.equal(getTowers(db, { q: '56680:35' }).items[0].id, 'a-orange-lte');
+    // A 5G query puts 5G stations ahead of LTE-only ones.
+    const nr = getTowers(db, { q: '14510115 5G' }).items.map(t => t.id);
+    assert.deepEqual(nr, ['b-play-5g', 'c-tmobile-5g', 'a-orange-lte']);
+    // The "260 06" prefix puts Play first.
+    const tmobileFirst = getTowers(db, { q: '260 02 56680:35 5G' }).items.map(t => t.id);
+    assert.equal(tmobileFirst[0], 'c-tmobile-5g');
+    assert.equal(getTowers(db, { q: '260 06 14510115' }).items[0].id, 'b-play-5g');
+  } finally {
+    db.close();
+  }
+});

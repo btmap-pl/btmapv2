@@ -10,6 +10,7 @@ export interface SectorSelection {
   sectorNum?: number;
   cellId?: number;
   eci?: number;
+  nci?: number;
   label?: string;
 }
 
@@ -195,6 +196,7 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
               sectorNum: sec.sectorNum,
               cellId: parsedCell.cellId,
               eci: parsedCell.eci,
+              nci: parsedCell.type === 'NR' ? parsedCell.nci : undefined,
               label: parsedCell.displaySummary,
             };
           }
@@ -281,7 +283,15 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
               </span>
               <div className="search-cell-meta">
                 <div className="search-cell-badges">
-                  <span className="search-cell-badge">{parsedCell.type === 'NR' ? '5G NR' : '4G LTE'}</span>
+                  <span className="search-cell-badge">
+                    {parsedCell.ambiguousTech
+                      ? '4G / 5G'
+                      : parsedCell.type === 'NR'
+                        ? '5G NR'
+                        : parsedCell.type === 'LTE'
+                          ? '4G LTE'
+                          : 'eNB / gNB'}
+                  </span>
                   <span className="search-cell-sub">{t.searchCellIdHeader}</span>
                 </div>
                 <strong>{parsedCell.displaySummary}</strong>
@@ -307,6 +317,7 @@ export default function Search({ onSelect, onPlace, onError, onActiveChange }: S
                       sectorNum: sectorInfo.sectorNum,
                       cellId: parsedCell?.cellId,
                       eci: parsedCell?.eci,
+                      nci: parsedCell?.type === 'NR' ? parsedCell.nci : undefined,
                       label: parsedCell?.displaySummary,
                     }
                   : undefined;
