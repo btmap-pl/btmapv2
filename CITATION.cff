@@ -4,8 +4,8 @@ title: "BTMap: Open-source Cellular Telecommunications and RF Infrastructure Pla
 authors:
   - family-names: "Janiszewski"
     given-names: "Jerzy"
-version: "2.0.3"
-date-released: "2026-11-08"
+version: "2.0.4"
+date-released: "2026-11-15"
 license: "MIT"
 url: "https://github.com/JUreK646/btmapv2"
 repository-code: "https://github.com/JUreK646/btmapv2"

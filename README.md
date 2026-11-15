@@ -325,7 +325,7 @@ If you use BTMap or its data pipelines in research, please cite it using [`CITAT
 @software{Janiszewski_BTMap_2026,
   author = {Janiszewski, Jerzy},
   title = {{BTMap: Open-source Cellular Telecommunications and RF Infrastructure Platform}},
-  version = {2.0.3},
+  version = {2.0.4},
   year = {2026},
   url = {https://github.com/JUreK646/btmapv2}
 }
