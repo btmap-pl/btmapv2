@@ -10,6 +10,7 @@ import {
   Polyline,
   Polygon,
   Marker,
+  TileLayer,
   useMap,
   useMapEvents,
 } from 'react-leaflet';
@@ -1426,6 +1427,7 @@ export default function MapView({
   showAzimuths,
   highlightedSector,
   settings,
+  coverageUrl,
 }: {
   theme: Theme;
   basemap: BasemapId;
@@ -1450,6 +1452,8 @@ export default function MapView({
   showAzimuths?: boolean;
   highlightedSector?: HighlightedSector | null;
   settings?: AppSettings;
+  /** Tile URL of the crowdsourced coverage layer, or undefined when it is off. */
+  coverageUrl?: string;
 }) {
   const markers = items.slice(0, 1000);
   const visible = useMemo(() => {
@@ -1510,6 +1514,7 @@ export default function MapView({
       preferCanvas
     >
       <BaseLayer theme={theme} basemap={basemap} onError={onBasemapError} />
+      {coverageUrl && <TileLayer key={coverageUrl} url={coverageUrl} opacity={1} maxZoom={18} minZoom={5} zIndex={5} attribution="Zasięg: użytkownicy BTMap" />}
       <ScaleControl position="bottomleft" imperial={false} />
       <MapEvents
         onBounds={onBounds}

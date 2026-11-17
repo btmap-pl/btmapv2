@@ -22,6 +22,7 @@ import {evaluateAreaCoverage} from './areaEvaluation.ts';
 import {getTelecomStats, invalidateStatsCache, warmStatsCache} from './stats.ts';
 import {getTowerHistory, recordTowerChange} from './towerHistory.ts';
 import {getKmzCatalog, generateKmzArchive} from './kmzExport.ts';
+import {addCoverage,coverageMeta,coverageVersion,coverageTile,createTileCache,ensureCoverageSchema} from './coverage.ts';
 import {cleanNodeLinkRequest, resolveNodeLink, saveNodeLink, withNodeLinks, getNearestTowers} from './nodeLinks.ts';
 
 type User = { id: string; email: string; nick: string; role: string; points: number; level: number };
@@ -126,6 +127,26 @@ export function createApp(
   });
   app.post('/api/auth/logout',(req,res)=>{ db.prepare('DELETE FROM sessions WHERE token=?').run(digest(sessionToken(req))); res.clearCookie('btmap_session',{path:'/'}); res.json({ok:true}); });
   let cachedStats: { at:number; data:unknown } | null=null;
+  // Crowdsourced coverage map: anonymous measurements in, PNG tiles out.
+  ensureCoverageSchema(db);
+  const coverageTiles=createTileCache();
+  // A phone uploads at most every few minutes; 120 batches per 10 min leaves room for retries.
+  const coverageLimit=limiter(120,600000);
+  app.post('/api/coverage',coverageLimit,(req,res)=>{try{res.json({accepted:addCoverage(db,req.body)});}catch(e){res.status(400).json({error:(e as Error).message});}});
+  app.get('/api/coverage/meta',(_req,res)=>{try{res.json(coverageMeta(db));}catch(e){serverError(res,e,'Błąd mapy zasięgu.');}});
+  app.get('/api/coverage/tiles/:z/:x/:y.png',(req,res)=>{
+    try{
+      const z=Number(req.params.z),x=Number(req.params.x),y=Number(req.params.y);
+      if(![z,x,y].every(Number.isInteger)||x<0||y<0||x>=2**z||y>=2**z)return res.status(400).json({error:'Nieprawidłowy kafelek.'});
+      const filter={operator:String(req.query.operator||''),tech:req.query.tech?String(req.query.tech):undefined,band:req.query.band?String(req.query.band):undefined};
+      const version=coverageVersion(db);
+      const tile=coverageTiles.get(`${filter.operator}|${filter.tech}|${filter.band}|${z}/${x}/${y}`,version,()=>coverageTile(db,z,x,y,filter));
+      res.setHeader('Content-Type','image/png');
+      // Short cache: new measurements show within minutes.
+      res.setHeader('Cache-Control','public, max-age=300');
+      res.end(tile);
+    }catch(e){res.status(400).json({error:(e as Error).message});}
+  });
   app.get('/api/health',(_req,res)=>{
     if(cachedStats && Date.now()-cachedStats.at<30000) return res.json(cachedStats.data);
     const count=(sql:string)=>Number(db.prepare(sql).get()!.count);

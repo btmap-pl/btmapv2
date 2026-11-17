@@ -3,6 +3,8 @@ import {Map as MapIcon,Database,ChartNoAxesCombined,FolderDown,Sun,Moon,Plus,Min
 import type L from 'leaflet';
 import MapView, { type HighlightedSector } from './components/MapView';
 import BasemapPicker from './components/BasemapPicker';
+import CoverageControl,{coverageTileUrl} from './components/CoverageControl';
+import type {CoverageSelection} from './components/CoverageControl';
 import FiltersPanel from './components/Filters';
 import Search, { type SectorSelection } from './components/Search';
 import TowerList from './components/TowerList';
@@ -44,7 +46,7 @@ export default function App(){
 
   const navItems=useMemo(()=>[
     {id:'map' as const,label:t.map,icon:MapIcon},
-    {id:'coverage' as const,label:t.coverageMap,icon:Signal,disabled:true,badge:t.comingSoon},
+    {id:'coverage' as const,label:t.coverageMap,icon:Signal},
     {id:'database' as const,label:t.database,icon:Database},
     {id:'stats' as const,label:t.stats,icon:ChartNoAxesCombined},
     {id:'kmz' as const,label:t.kmz,icon:FolderDown},
@@ -73,6 +75,9 @@ export default function App(){
   const [showPem,setShowPem]=useState(false);
   const [showAzimuths,setShowAzimuths]=useState(false);
   const [showRadiolines,setShowRadiolines]=useState(false);
+  const [showCoverage,setShowCoverage]=useState(false);
+  const [coverage,setCoverage]=useState<CoverageSelection>({operator:'Play'});
+  const [coverageVersion,setCoverageVersion]=useState('0');
   const [onlyNewRadiolines,setOnlyNewRadiolines]=useState(false);
   const [panel,setPanel]=useState<'filters'|'stations'|null>(null),[navCollapsed,setNavCollapsed]=useState(false),[mobileNav,setMobileNav]=useState(false);
   const [basemap,setBasemap]=useState<BasemapId>(getStoredBasemap);
@@ -287,7 +292,11 @@ export default function App(){
     {mobileNav&&<button className="nav-scrim" aria-label={t.closeNav} onClick={()=>setMobileNav(false)}/>}
     <aside className="app-sidebar" aria-label={t.appMenu}>
       <button className="sidebar-brand" onClick={()=>changeView('map')} aria-label={t.brandAria}><span className="sidebar-brand-symbol"><Radio size={25}/></span><span className="sidebar-wordmark">btmap<span>.</span></span><span className="sidebar-version">v2</span></button>
-      <nav className="side-nav" aria-label={t.mainNav}>{navItems.map(item=>('disabled' in item && item.disabled)?<div key={item.id} className="side-nav-disabled-wrap" title={`${item.label} (${item.badge})`}><button type="button" disabled className="side-nav-disabled" aria-disabled="true" tabIndex={-1} aria-label={`${item.label} - ${item.badge}`}><item.icon size={19}/><span>{item.label}</span><span className="side-nav-soon-badge">{item.badge}</span></button></div>:item.id==='stats'?<div key={item.id} className={`side-nav-group ${statsExpanded?'is-expanded':''}`}><button type="button" className={view===item.id?'active':''} aria-current={view===item.id?'page':undefined} aria-expanded={statsExpanded} title={item.label} onClick={()=>{if(view!=='stats'){changeView('stats');setStatsExpanded(true);}else{setStatsExpanded(prev=>!prev);}}}><item.icon size={19}/><span>{item.label}</span></button>{statsExpanded&&<div className="side-subnav" role="group" aria-label={item.label}>{statsSubItems.map(sub=>{const isSubActive=view==='stats'&&statsSection===sub.id;return <button key={sub.id} type="button" className={`side-subnav-item ${isSubActive?'active':''}`} onClick={()=>{setStatsSection(sub.id);if(view!=='stats')changeView('stats');else setMobileNav(false);}}><span>{sub.label}</span></button>;})}</div>}</div>:<button key={item.id} className={view===item.id?'active':''} aria-current={view===item.id?'page':undefined} title={item.label} onClick={()=>changeView(item.id)}><item.icon size={19}/><span>{item.label}</span>{view===item.id&&<span className="nav-active-dot"/>}</button>)}</nav>
+      <nav className="side-nav" aria-label={t.mainNav}>{navItems.map(item=>item.id==='stats'?<div key={item.id} className={`side-nav-group ${statsExpanded?'is-expanded':''}`}><button type="button" className={view===item.id?'active':''} aria-current={view===item.id?'page':undefined} aria-expanded={statsExpanded} title={item.label} onClick={()=>{if(view!=='stats'){changeView('stats');setStatsExpanded(true);}else{setStatsExpanded(prev=>!prev);}}}><item.icon size={19}/><span>{item.label}</span></button>{statsExpanded&&<div className="side-subnav" role="group" aria-label={item.label}>{statsSubItems.map(sub=>{const isSubActive=view==='stats'&&statsSection===sub.id;return <button key={sub.id} type="button" className={`side-subnav-item ${isSubActive?'active':''}`} onClick={()=>{setStatsSection(sub.id);if(view!=='stats')changeView('stats');else setMobileNav(false);}}><span>{sub.label}</span></button>;})}</div>}</div>:(()=>{
+        // "Mapa zasięgu" is the map with the crowdsourced coverage layer switched on.
+        const active=item.id==='coverage'?view==='map'&&showCoverage:item.id==='map'?view==='map'&&!showCoverage:view===item.id;
+        return <button key={item.id} className={active?'active':''} aria-current={active?'page':undefined} title={item.label} onClick={()=>{if(item.id==='coverage'){changeView('map');setShowCoverage(true);}else{if(item.id==='map')setShowCoverage(false);changeView(item.id);}}}><item.icon size={19}/><span>{item.label}</span>{active&&<span className="nav-active-dot"/>}</button>;
+      })())}</nav>
       <div className="sidebar-bottom"><a className="sidebar-about" href="/btmap/changelog" title="Changelog" aria-current={view==='changelog'?'page':undefined} onClick={e=>{if(e.button===0&&!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey){e.preventDefault();changeView('changelog');}}}><History size={18}/><span>Changelog</span></a><button className="sidebar-about" title={t.guides} onClick={()=>changeView('guides')}><Info size={18}/><span>{t.guides}</span></button><button className="sidebar-about" title={t.settings} onClick={()=>setDialog('settings')}><SettingsIcon size={18}/><span>{t.settings}</span></button><div className="sidebar-lang-wrap"><button type="button" className="sidebar-about sidebar-lang-compact-btn" onClick={()=>setLang(lang==='pl'?'en':'pl')} title={t.switchLanguage} aria-label={t.switchLanguage}><Languages size={18}/><span className="sidebar-lang-compact-badge">{lang.toUpperCase()}</span></button><div className="sidebar-lang-toggle" title={t.switchLanguage}><Languages size={17} className="sidebar-lang-icon"/><span className="sidebar-lang-text">{t.language}</span><div className="lang-toggle-pills" role="group" aria-label={t.language}><button type="button" className={`lang-pill ${lang==='pl'?'is-active':''}`} onClick={()=>setLang('pl')} aria-pressed={lang==='pl'} title="Polski (PL)">PL</button><button type="button" className={`lang-pill ${lang==='en'?'is-active':''}`} onClick={()=>setLang('en')} aria-pressed={lang==='en'} title="English (ENG)">ENG</button></div></div></div><div className="sidebar-account"><button onClick={()=>setDialog(user?'profile':'auth')} title={user?t.account:t.signIn}><span className="sidebar-avatar">{user?user.nick.slice(0,1).toUpperCase():<UserRound size={19}/>}</span><span><strong>{user?user.nick:t.signIn}</strong><small>{user?t.account:t.accountDesc}</small></span><ArrowUpRight size={16}/></button></div></div>
     </aside>
     <section className="app-main">
@@ -304,6 +313,7 @@ export default function App(){
             onBounds={boundsChanged}
             onReady={mapReady}
             radiolines={showRadiolines ? radiolines.data : []}
+            coverageUrl={showCoverage ? coverageTileUrl(coverage, coverageVersion) : undefined}
             position={position}
             pemPlans={showPem?pem.data?.items:[]}
             terrainTower={terrainTower}
@@ -391,6 +401,17 @@ export default function App(){
             <div className="map-searchbar-actions">
               <button
                 type="button"
+                className={`filter-trigger is-compactable ${showCoverage ? 'selected' : ''}`}
+                onClick={() => setShowCoverage(prev => !prev)}
+                aria-pressed={showCoverage}
+                aria-label={lang === 'pl' ? 'Mapa zasięgu' : 'Coverage map'}
+                title={showCoverage ? (lang === 'pl' ? 'Ukryj mapę zasięgu' : 'Hide coverage') : (lang === 'pl' ? 'Pokaż zasięg zmierzony przez użytkowników' : 'Show crowdsourced coverage')}
+              >
+                <Signal size={17} />
+                <span>{lang === 'pl' ? 'Zasięg' : 'Coverage'}</span>
+              </button>
+              <button
+                type="button"
                 className={`filter-trigger is-compactable ${showRadiolines ? 'selected' : ''}`}
                 onClick={() => setShowRadiolines(prev => !prev)}
                 aria-pressed={showRadiolines}
@@ -447,8 +468,9 @@ export default function App(){
             </div>
           </div>
           {error&&<div className="map-error" role="alert">{error}<button onClick={()=>setRefresh(r=>r+1)}>{t.retry}</button></div>}
-          {((showPem || showAzimuths || showRadiolines) && !panel && !selected) && (
+          {((showPem || showAzimuths || showRadiolines || showCoverage) && !panel && !selected) && (
             <div className="map-status-stack">
+              {showCoverage && <CoverageControl value={coverage} onChange={setCoverage} onVersion={setCoverageVersion}/>}
               {showAzimuths && <div className="azimuth-map-status" role="status"><Compass size={13} aria-hidden="true"/><span>{bounds&&bounds.zoom<14?t.azimuthsZoomHint:t.azimuthsActive}</span></div>}
               {showRadiolines && (
                 <div className="radioline-map-status" role="status">

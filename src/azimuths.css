@@ -833,3 +833,15 @@
     border-bottom: 1px solid var(--rlm-divider);
   }
 }
+
+/* Crowdsourced coverage layer picker */
+.coverage-map-status { background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow); border-radius:12px; padding:10px 12px; font-size:12px; color:var(--text); display:flex; flex-direction:column; gap:8px; }
+.coverage-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.coverage-head span { color:var(--muted); font-size:11px; }
+.coverage-operators { display:flex; flex-wrap:wrap; gap:6px; }
+.coverage-operators button { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 10px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; }
+.coverage-operators button i { width:9px; height:9px; border-radius:50%; background:var(--op); opacity:.5; }
+.coverage-operators button.selected { color:var(--text); border-color:var(--op); background:color-mix(in srgb, var(--op) 14%, transparent); }
+.coverage-operators button.selected i { opacity:1; }
+.coverage-map-status select { height:30px; border-radius:8px; border:1px solid var(--line); background:var(--surface-alt); color:var(--text); font-size:12px; padding:0 8px; }
+.coverage-empty { margin:0; color:var(--muted); font-size:11px; line-height:1.4; }
