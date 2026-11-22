@@ -133,8 +133,15 @@ export function coverageTile(db: DatabaseSync, z: number, x: number, y: number, 
   if (z < 5 || z > 18) return EMPTY_TILE;
   const north = yToLat(y * TILE, z), south = yToLat((y + 1) * TILE, z);
   const west = xToLng(x * TILE, z), east = xToLng((x + 1) * TILE, z);
-  // Margin so blobs crossing the tile edge are drawn on both tiles.
-  const mLat = GRID_LAT * 2, mLng = GRID_LNG * 2;
+  // Blobs are drawn on a canvas larger than the tile and then cropped, so a blob crossing the
+  // edge is blurred with its neighbours on both tiles and neighbouring tiles join seamlessly.
+  const cellPx = Math.max(1, lngToX(GRID_LNG, z) - lngToX(0, z));
+  const cellPxLat = Math.max(1, latToY(north - GRID_LAT, z) - latToY(north, z));
+  const blurR = Math.max(2, Math.min(10, Math.round(cellPx * 0.8)));
+  const pad = Math.min(512, Math.ceil(Math.hypot(cellPx, cellPxLat) * 0.75 + 2 * blurR + 2));
+  const size = TILE + 2 * pad;
+  const marginCells = Math.ceil(pad / Math.min(cellPx, cellPxLat)) + 1;
+  const mLat = GRID_LAT * marginCells, mLng = GRID_LNG * marginCells;
   const params: Array<string | number> = [f.operator,
     Math.floor((south - mLat) / GRID_LAT), Math.floor((north + mLat) / GRID_LAT),
     Math.floor((west - mLng) / GRID_LNG), Math.floor((east + mLng) / GRID_LNG)];
@@ -144,8 +151,8 @@ export function coverageTile(db: DatabaseSync, z: number, x: number, y: number, 
   const cells = db.prepare(`SELECT DISTINCT gy, gx FROM coverage WHERE operator = ? AND gy BETWEEN ? AND ? AND gx BETWEEN ? AND ?${extra}`).all(...params) as Array<{ gy: number; gx: number }>;
   if (!cells.length) return EMPTY_TILE;
 
-  const mask = new Float32Array(TILE * TILE);
-  const ox = x * TILE, oy = y * TILE;
+  const mask = new Float32Array(size * size);
+  const ox = x * TILE - pad, oy = y * TILE - pad;
   for (const c of cells) {
     const lat0 = c.gy * GRID_LAT, lng0 = c.gx * GRID_LNG;
     const px0 = lngToX(lng0, z) - ox, px1 = lngToX(lng0 + GRID_LNG, z) - ox;
@@ -153,52 +160,50 @@ export function coverageTile(db: DatabaseSync, z: number, x: number, y: number, 
     const cx = (px0 + px1) / 2, cy = (py0 + py1) / 2;
     // Disc radius: a bit more than half the cell diagonal, at least ~1.5 px when zoomed out.
     const r = Math.max(1.5, Math.hypot(px1 - px0, py1 - py0) * 0.75);
-    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(TILE - 1, Math.ceil(cx + r));
-    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(TILE - 1, Math.ceil(cy + r));
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(size - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(size - 1, Math.ceil(cy + r));
     for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
       const d = Math.hypot(px + 0.5 - cx, py + 0.5 - cy);
       const a = Math.min(1, Math.max(0, r - d + 0.5)); // anti-aliased edge
-      const i = py * TILE + px;
+      const i = py * size + px;
       if (a > mask[i]) mask[i] = a;
     }
   }
   // Soften into blobs: blur the mask and re-threshold it, so nearby cells merge and edges curve,
   // like the operators' coverage maps. Blur radius follows the cell size in pixels.
-  const cellPx = Math.max(1, lngToX(GRID_LNG, z) - lngToX(0, z));
-  const blurR = Math.max(2, Math.min(10, Math.round(cellPx * 0.8)));
-  boxBlur(mask, blurR); boxBlur(mask, blurR);
-  for (let i = 0; i < mask.length; i++) {
-    const v = mask[i];
-    // Smooth step around 0.18–0.32: blob edge, anti-aliased.
-    mask[i] = v <= 0.18 ? 0 : v >= 0.32 ? 1 : (v - 0.18) / 0.14;
-  }
+  boxBlur(mask, size, blurR); boxBlur(mask, size, blurR);
   const [cr, cg, cb] = OPERATOR_COLORS[f.operator];
   const out = new Uint8ClampedArray(TILE * TILE * 4);
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    out[i * 4] = cr; out[i * 4 + 1] = cg; out[i * 4 + 2] = cb; out[i * 4 + 3] = Math.round(mask[i] * 150);
+  for (let ty = 0; ty < TILE; ty++) for (let tx = 0; tx < TILE; tx++) {
+    const v = mask[(ty + pad) * size + tx + pad];
+    // Smooth step around 0.18–0.32: blob edge, anti-aliased.
+    const a = v <= 0.18 ? 0 : v >= 0.32 ? 1 : (v - 0.18) / 0.14;
+    if (!a) continue;
+    const i = ty * TILE + tx;
+    out[i * 4] = cr; out[i * 4 + 1] = cg; out[i * 4 + 2] = cb; out[i * 4 + 3] = Math.round(a * 150);
   }
   return png(out, TILE, TILE);
 }
 
-/** Separable box blur in place (horizontal then vertical). */
-function boxBlur(m: Float32Array, r: number) {
+/** Separable box blur in place (horizontal then vertical) of a square [n]×[n] mask. */
+function boxBlur(m: Float32Array, n: number, r: number) {
   const tmp = new Float32Array(m.length);
   const w = r * 2 + 1;
-  for (let y = 0; y < TILE; y++) {
+  const clamp = (v: number) => Math.min(n - 1, Math.max(0, v));
+  for (let y = 0; y < n; y++) {
     let acc = 0;
-    for (let x = -r; x <= r; x++) acc += m[y * TILE + Math.min(TILE - 1, Math.max(0, x))];
-    for (let x = 0; x < TILE; x++) {
-      tmp[y * TILE + x] = acc / w;
-      acc += m[y * TILE + Math.min(TILE - 1, x + r + 1)] - m[y * TILE + Math.max(0, x - r)];
+    for (let x = -r; x <= r; x++) acc += m[y * n + clamp(x)];
+    for (let x = 0; x < n; x++) {
+      tmp[y * n + x] = acc / w;
+      acc += m[y * n + clamp(x + r + 1)] - m[y * n + clamp(x - r)];
     }
   }
-  for (let x = 0; x < TILE; x++) {
+  for (let x = 0; x < n; x++) {
     let acc = 0;
-    for (let y = -r; y <= r; y++) acc += tmp[Math.min(TILE - 1, Math.max(0, y)) * TILE + x];
-    for (let y = 0; y < TILE; y++) {
-      m[y * TILE + x] = acc / w;
-      acc += tmp[Math.min(TILE - 1, y + r + 1) * TILE + x] - tmp[Math.max(0, y - r) * TILE + x];
+    for (let y = -r; y <= r; y++) acc += tmp[clamp(y) * n + x];
+    for (let y = 0; y < n; y++) {
+      m[y * n + x] = acc / w;
+      acc += tmp[clamp(y + r + 1) * n + x] - tmp[clamp(y - r) * n + x];
     }
   }
 }
