@@ -28,6 +28,7 @@ import type {BasemapId} from './lib/basemaps';
 import type {Bounds,Filters,Health,NodeLinkSuggestion,Theme,Tower,View} from './types';
 import {i18n, I18nProvider, type Lang} from './lib/i18n';
 import {AppSettings, DEFAULT_SETTINGS, formatCoordinates, readSettings, saveSettings} from './lib/settings';
+import {COUNTRIES,countryAt} from '../shared/countries';
 
 const readView=():View=>{
   if(window.location.pathname.replace(/\/+$/,'')==='/btmap/changelog')return 'changelog';
@@ -245,6 +246,17 @@ export default function App(){
     return () => window.removeEventListener('keydown', handle);
   }, [dialog, isPickingTerrainTarget, terrainTower, terrainTarget, isPickingEvalTarget, evalTarget]);
   const changeFilters=(value:Filters)=>{setFilters(value);setPage(0);};
+  // The country in the middle of the map decides which operators, bands and regions the filters offer.
+  const country=useMemo(()=>bounds?countryAt((bounds.minLat+bounds.maxLat)/2,(bounds.minLng+bounds.maxLng)/2)??COUNTRIES.PL:COUNTRIES.PL,[bounds]);
+  useEffect(()=>{
+    // Choices that do not exist in the new country would hide every station there.
+    setFilters(f=>{
+      const operators=f.operators.filter(o=>country.operators.some(c=>c.name===o));
+      const bands=f.bands.filter(b=>country.bands.includes(b));
+      const province=country.provinces.includes(f.province)?f.province:'';
+      return operators.length===f.operators.length&&bands.length===f.bands.length&&province===f.province?f:{...f,operators,bands,province};
+    });
+  },[country]);
   const changeView=(next:View)=>{
     if(next!=='map'){setSelected(null);setMap(null);}
     if(next!==view){const url=new URL(window.location.href);url.pathname=next==='changelog'?'/btmap/changelog':'/btmap';url.hash='';if(next!=='map')url.searchParams.delete('station');window.history.pushState({...window.history.state,btmapView:next},'',url);}
@@ -282,7 +294,7 @@ export default function App(){
   const filterTotal=filterCount(filters)+(showPem&&view==='map'?1:0)+(showAzimuths&&view==='map'?1:0)+(showRadiolines&&view==='map'?1:0);
   const filterPanel=<aside className="floating-panel filter-drawer" aria-labelledby="station-filters-title">
     <div className="filter-drawer-heading"><h2 id="station-filters-title">{view==='map'?t.filterMapTitle:t.filterStationTitle}</h2><span className="filter-data-source"><DatabaseZap size={13} aria-hidden="true"/>{filters.source==='UKE'?t.filterSourceUke:filters.source==='BTMAP'?'BTMap':t.filterSourceAll}{showPem&&view==='map'?' · SI2PEM':''}{showRadiolines&&view==='map'?' · Radiolinie':''}</span><button className="icon-button" aria-label={t.close} onClick={()=>setPanel(null)}><X size={18}/></button></div>
-    <div className="panel-scroll"><FiltersPanel filters={filters} onChange={changeFilters} pemEnabled={showPem} onPemChange={view==='map'?setShowPem:undefined} pemStatus={pemStatus} azimuthsEnabled={showAzimuths} onAzimuthsChange={view==='map'?setShowAzimuths:undefined} radiolinesEnabled={showRadiolines} onRadiolinesChange={view==='map'?setShowRadiolines:undefined} radiolinesStatus={radiolinesStatus} onlyNewRadiolines={onlyNewRadiolines} onOnlyNewRadiolinesChange={view==='map'?setOnlyNewRadiolines:undefined}/></div>
+    <div className="panel-scroll"><FiltersPanel filters={filters} onChange={changeFilters} pemEnabled={showPem} onPemChange={view==='map'?setShowPem:undefined} pemStatus={pemStatus} azimuthsEnabled={showAzimuths} onAzimuthsChange={view==='map'?setShowAzimuths:undefined} radiolinesEnabled={showRadiolines} onRadiolinesChange={view==='map'?setShowRadiolines:undefined} radiolinesStatus={radiolinesStatus} onlyNewRadiolines={onlyNewRadiolines} onOnlyNewRadiolinesChange={view==='map'?setOnlyNewRadiolines:undefined} country={country}/></div>
     <div className="filter-drawer-footer"><p className="filter-results" role="status">{loading?t.filterLoading:error?t.filterLoadError:<><strong>{formatNumber(view==='map'?Math.min(result.total, 1000):result.total)}</strong> {view==='database'?t.filterResultsInDb(formatNumber(result.total)):t.filterResultsInArea(formatNumber(Math.min(result.total, 1000)))}</>}</p><div className="filter-drawer-actions"><button className="filter-reset" disabled={!filterTotal} onClick={()=>{changeFilters(DEFAULT_FILTERS);if(view==='map'){setShowPem(false);setShowAzimuths(false);setShowRadiolines(false);}}}><RotateCcw size={14}/>{t.clear}{filterTotal>0&&<span>{filterTotal}</span>}</button><button className="primary-button" onClick={()=>setPanel(null)}>{t.ready}</button></div></div>
   </aside>;
 
@@ -558,7 +570,7 @@ export default function App(){
     {dialog==='profile'&&user&&<ProfileDialog user={user} onClose={()=>setDialog(null)} onLogout={async()=>{await logout();setDialog(null);if(view==='admin')setView('map');}} onAdmin={()=>{setDialog(null);changeView('admin');}}/>}
     {dialog==='submit'&&user&&editTower&&<SubmitDialog tower={editTower} onClose={()=>setDialog(null)} onSuccess={()=>setRefresh(r=>r+1)}/>}
     {dialog==='settings'&&<SettingsDialog onClose={()=>setDialog(null)} settings={settings} onUpdate={setSettings} onReset={()=>setSettings(DEFAULT_SETTINGS)} theme={theme} onThemeChange={setTheme} lang={lang} onLangChange={setLang} onNotice={setNotice}/>}
-    {createStationTower!==null&&<StationSubmissionDialog sourceTower={createStationTower==='blank'?null:createStationTower} onClose={()=>setCreateStationTower(null)} onSuccess={()=>{setCreateStationTower(null);setRefresh(r=>r+1);setNotice(t.stationSubmissionSuccess);}}/>}
+    {createStationTower!==null&&<StationSubmissionDialog sourceTower={createStationTower==='blank'?null:createStationTower} initialCenter={bounds?[(bounds.minLat+bounds.maxLat)/2,(bounds.minLng+bounds.maxLng)/2]:null} onClose={()=>setCreateStationTower(null)} onSuccess={()=>{setCreateStationTower(null);setRefresh(r=>r+1);setNotice(t.stationSubmissionSuccess);}}/>}
     {terrainTower!==null&&terrainTarget!==null&&<TerrainProfileDialog tower={terrainTower} targetCoords={terrainTarget} onTargetChange={setTerrainTarget} onSectorAzimuthChange={setTerrainSectorAzimuth} onPickOnMap={()=>setIsPickingTerrainTarget(true)} onClose={closeTerrainProfile}/>}
     {evalTarget!==null&&<AreaEvaluationDialog targetCoords={evalTarget} radiusM={evalRadiusM} onRadiusChange={setEvalRadiusM} onPickOnMap={()=>setIsPickingEvalTarget(true)} onClose={closeAreaEvaluation} onOpenTerrainProfile={openTerrainProfile}/>}
   </div>

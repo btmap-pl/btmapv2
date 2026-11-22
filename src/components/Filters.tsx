@@ -1,7 +1,7 @@
 import {Fragment} from 'react';
 import {Check,ChevronDown,Compass,Database,FileText,Layers,Radio} from 'lucide-react';
 import type {Filters as FilterState} from '../types';
-import {BANDS,OPERATORS,PROVINCES} from '../lib/constants';
+import {COUNTRIES,type Country} from '../../shared/countries';
 import {useI18n} from '../lib/i18n';
 
 const technologies=[
@@ -26,6 +26,7 @@ export default function Filters({
   radiolinesStatus,
   onlyNewRadiolines,
   onOnlyNewRadiolinesChange,
+  country=COUNTRIES.PL,
 }:{
   filters:FilterState;
   onChange:(f:FilterState)=>void;
@@ -39,6 +40,8 @@ export default function Filters({
   radiolinesStatus?:string;
   onlyNewRadiolines?:boolean;
   onOnlyNewRadiolinesChange?:(enabled:boolean)=>void;
+  /** Country in the middle of the map: its operators, bands and regions are offered. */
+  country?:Country;
 }){
   const {t} = useI18n();
   // The 5G mode is only recorded for BTMap cells, so the switch exists only for that source with 5G NR selected.
@@ -147,7 +150,7 @@ export default function Filters({
     <fieldset className="filter-group">
       <legend>{t.filterOperators} <span>{filters.operators.length ? t.filterSelectedCount(filters.operators.length) : t.filterAll}</span></legend>
       <div className="filter-options operator-filters">
-        {OPERATORS.map(operator=>{
+        {country.operators.map(operator=>{
           const selected=filters.operators.includes(operator.name);
           return <button type="button" key={operator.name} className={`filter-option operator-filter ${selected?'is-selected':''}`} aria-pressed={selected} onClick={()=>toggle('operators',operator.name)}>
             <span className="filter-operator-symbol" aria-hidden="true">{selected?<Check size={12} strokeWidth={3}/>:<i style={{background:operator.color}}/>}</span>
@@ -174,19 +177,19 @@ export default function Filters({
     <fieldset className="filter-group">
       <legend>{t.filterBands} <span>MHz</span></legend>
       <div className="filter-options frequency-filters">
-        {BANDS.map(band=><button type="button" key={band} className={`filter-option frequency-filter ${filters.bands.includes(band)?'is-selected':''}`} aria-label={`Pasmo ${band} MHz`} aria-pressed={filters.bands.includes(band)} onClick={()=>toggle('bands',band)}>{band}</button>)}
+        {country.bands.map(band=><button type="button" key={band} className={`filter-option frequency-filter ${filters.bands.includes(band)?'is-selected':''}`} aria-label={`Pasmo ${band} MHz`} aria-pressed={filters.bands.includes(band)} onClick={()=>toggle('bands',band)}>{band}</button>)}
       </div>
     </fieldset>
 
-    <div className="filter-region">
+    {country.provinces.length>0&&<div className="filter-region">
       <label htmlFor="station-province">{t.filterProvince}</label>
       <div className="filter-select">
         <select id="station-province" value={filters.province} onChange={event=>onChange({...filters,province:event.target.value})}>
           <option value="">{t.filterAllPoland}</option>
-          {PROVINCES.map(province=><option key={province}>{province}</option>)}
+          {country.provinces.map(province=><option key={province}>{province}</option>)}
         </select>
         <ChevronDown size={15} aria-hidden="true"/>
       </div>
-    </div>
+    </div>}
   </div>;
 }

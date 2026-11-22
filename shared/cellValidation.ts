@@ -1,4 +1,5 @@
 import { operatorName } from './operators.ts';
+import { countryAt, ROMANIAN_OPERATORS, type Country } from './countries.ts';
 
 export type RatTech = '5G' | 'LTE' | 'UMTS' | 'GSM';
 
@@ -303,13 +304,42 @@ export interface CellValidationResult {
   errors: Record<string, string>;
 }
 
-export function findBandAllocation(tech: string, bandStr: string): BandAllocation | undefined {
+/** Whole 3GPP channel range of each band, for countries without per-operator ranges. */
+const FULL_RANGES: Record<string, { min: number; max: number }> = {
+  b28: { min: 9210, max: 9659 }, b20: { min: 6150, max: 6449 }, b8: { min: 3450, max: 3799 },
+  b3: { min: 1200, max: 1949 }, b1: { min: 0, max: 599 }, b7: { min: 2750, max: 3449 }, b38: { min: 37750, max: 38249 },
+  n28: { min: 151600, max: 160600 }, n20: { min: 158200, max: 164200 }, n8: { min: 185000, max: 192000 },
+  n3: { min: 361000, max: 376000 }, n1: { min: 422000, max: 434000 }, n38: { min: 499200, max: 537999 },
+  n78: { min: 620000, max: 653333 }, B8: { min: 2937, max: 3088 }, B1: { min: 10562, max: 10838 },
+  GSM900: { min: 0, max: 1023 }, GSM1800: { min: 512, max: 885 },
+};
+
+/**
+ * Romania uses the same harmonised EU bands. ANCOM publishes no per-operator channel split, so a cell
+ * only has to be inside its band.
+ */
+export const ROMANIAN_BAND_PLAN: BandAllocation[] = POLISH_BAND_PLAN.map(b => ({
+  ...b,
+  label: b.bandCode === 'n38' ? '2600 TDD (n41)' : b.label.replace(' DSS', ''),
+  operatorRanges: Object.fromEntries(ROMANIAN_OPERATORS.map(op => [op.name, FULL_RANGES[b.bandCode] ?? { min: 0, max: Number.MAX_SAFE_INTEGER }])),
+  notes: undefined,
+}));
+
+const isRomanianOperator = (name: string) => ROMANIAN_OPERATORS.some(op => op.name === name);
+
+/** Band plan of the country an operator (or a place) belongs to. */
+export function bandPlanFor(operatorInput: string, country?: Country | null): BandAllocation[] {
+  if (country) return country.code === 'RO' ? ROMANIAN_BAND_PLAN : POLISH_BAND_PLAN;
+  return isRomanianOperator(operatorName(operatorInput)) ? ROMANIAN_BAND_PLAN : POLISH_BAND_PLAN;
+}
+
+export function findBandAllocation(tech: string, bandStr: string, plan: BandAllocation[] = POLISH_BAND_PLAN): BandAllocation | undefined {
   const normalizedTech = tech.toUpperCase() === 'NR' ? '5G' : tech.toUpperCase();
   const raw = bandStr.trim().toLowerCase();
   if (!raw) return undefined;
 
   // 1. Exact match on bandCode or label
-  const exact = POLISH_BAND_PLAN.find(b =>
+  const exact = plan.find(b =>
     b.tech === normalizedTech &&
     (b.bandCode.toLowerCase() === raw || b.label.toLowerCase() === raw)
   );
@@ -317,13 +347,13 @@ export function findBandAllocation(tech: string, bandStr: string): BandAllocatio
 
   // 2. Check TDD distinction for 2600 MHz
   if (raw.includes('2600') && raw.includes('tdd')) {
-    const tddBand = POLISH_BAND_PLAN.find(b => b.tech === normalizedTech && (b.bandCode === 'b38' || b.bandCode === 'n38'));
+    const tddBand = plan.find(b => b.tech === normalizedTech && (b.bandCode === 'b38' || b.bandCode === 'n38'));
     if (tddBand) return tddBand;
   }
 
   // 3. Check word boundary for bandCode (e.g. "b38", "n78", "b3")
   // Sort candidates by bandCode length descending so longer codes (b38) match before shorter (b3)
-  const candidatesByTech = POLISH_BAND_PLAN.filter(b => b.tech === normalizedTech)
+  const candidatesByTech = plan.filter(b => b.tech === normalizedTech)
     .sort((a, b) => b.bandCode.length - a.bandCode.length);
 
   for (const b of candidatesByTech) {
@@ -338,10 +368,10 @@ export function findBandAllocation(tech: string, bandStr: string): BandAllocatio
   const num = raw.replace(/\D/g, '');
   if (num) {
     if (normalizedTech === '5G' && (num === '3600' || num === '3700' || num === '3800')) {
-      const n78 = POLISH_BAND_PLAN.find(b => b.tech === '5G' && b.bandCode === 'n78');
+      const n78 = plan.find(b => b.tech === '5G' && b.bandCode === 'n78');
       if (n78) return n78;
     }
-    const candidates = POLISH_BAND_PLAN.filter(b => b.tech === normalizedTech && String(b.freqMhz) === num);
+    const candidates = plan.filter(b => b.tech === normalizedTech && String(b.freqMhz) === num);
     if (candidates.length === 1) return candidates[0];
     if (candidates.length > 1) {
       if (raw.includes('tdd')) return candidates.find(c => c.duplex === 'TDD') || candidates[0];
@@ -352,9 +382,10 @@ export function findBandAllocation(tech: string, bandStr: string): BandAllocatio
   return undefined;
 }
 
-export function getAvailableBandsForOperator(operatorInput: string, tech: RatTech): BandAllocation[] {
+export function getAvailableBandsForOperator(operatorInput: string, tech: RatTech, country?: Country | null): BandAllocation[] {
   const normOp = operatorName(operatorInput);
-  return POLISH_BAND_PLAN.filter(b => {
+  const plan = bandPlanFor(operatorInput, country);
+  return plan.filter(b => {
     if (b.tech !== tech) return false;
     if (normOp === 'Inne') return true;
     return Boolean(b.operatorRanges[normOp]);
@@ -374,9 +405,11 @@ export function calculateEci(nodeId: number | string, cellId: number | string, t
 /**
  * Validates a single cell against Polish operator rules.
  */
-export function validateCell(cell: CellInput, rawOperator: string): CellValidationResult {
+export function validateCell(cell: CellInput, rawOperator: string, country?: Country | null): CellValidationResult {
   const errors: Record<string, string> = {};
   const op = operatorName(rawOperator);
+  const plan = bandPlanFor(rawOperator, country);
+  const where = plan === ROMANIAN_BAND_PLAN ? 'w Rumunii' : 'w Polsce';
   const tech = (cell.tech?.toUpperCase() === 'NR' ? '5G' : cell.tech) as RatTech;
 
   if (!tech || !['5G', 'LTE', 'UMTS', 'GSM'].includes(tech)) {
@@ -385,11 +418,11 @@ export function validateCell(cell: CellInput, rawOperator: string): CellValidati
   }
 
   // 1. Find Band
-  const bandAlloc = findBandAllocation(tech, cell.band || '');
+  const bandAlloc = findBandAllocation(tech, cell.band || '', plan);
   if (!bandAlloc) {
     errors.band = 'Pasmo: nie ma go w planie pasm tego kraju.';
   } else if (op !== 'Inne' && !bandAlloc.operatorRanges[op]) {
-    errors.band = `Pasmo ${bandAlloc.label}: operator ${op} nie posiada tego pasma w Polsce.`;
+    errors.band = `Pasmo ${bandAlloc.label}: operator ${op} nie posiada tego pasma ${where}.`;
   }
 
   // 2. PCI Validation
@@ -553,13 +586,16 @@ export function validateStationSubmission(submission: StationSubmissionInput): S
     stationErrors.address = 'Podaj poprawny adres lub miejscowość (min. 3 znaki).';
     totalErrors++;
   }
-  if (!Number.isFinite(submission.lat) || submission.lat < 49.0 || submission.lat > 55.0) {
-    stationErrors.lat = 'Szerokość geograficzna (szer. N) musi mieścić się w granicach Polski (49.0 - 55.0).';
+  const country = countryAt(submission.lat, submission.lng);
+  if (!country) {
+    stationErrors.lat = 'Stacja musi leżeć w Polsce (szer. 49-55, dł. 14-24,5) lub w Rumunii (szer. 43,6-48,3, dł. 20,2-29,8).';
     totalErrors++;
-  }
-  if (!Number.isFinite(submission.lng) || submission.lng < 14.0 || submission.lng > 24.5) {
-    stationErrors.lng = 'Długość geograficzna (dł. E) musi mieścić się w granicach Polski (14.0 - 24.5).';
-    totalErrors++;
+  } else {
+    const op = operatorName(submission.operator || '');
+    if (submission.operator && op !== 'Inne' && !country.operators.some(o => o.name === op)) {
+      stationErrors.operator = `Operator ${op} nie działa w kraju: ${country.name.pl}.`;
+      totalErrors++;
+    }
   }
 
   if (!submission.cells || submission.cells.length === 0) {
@@ -568,7 +604,7 @@ export function validateStationSubmission(submission: StationSubmissionInput): S
   } else {
     submission.cells.forEach((cell, idx) => {
       const key = cell.id || String(idx);
-      const res = validateCell(cell, submission.operator);
+      const res = validateCell(cell, submission.operator, country);
       if (!res.valid) {
         cellErrors[key] = res.errors;
         totalErrors += Object.keys(res.errors).length;

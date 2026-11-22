@@ -428,10 +428,10 @@ const bump = (record: Record<string, number>, key: string, by = 1) => { record[k
 /** Counts the current state of the database. Growth is never estimated: it only comes from comparing two of these. */
 export function computeGrowthCounters(db: DatabaseSync, source: GrowthSource): GrowthCounters {
   const sql = source === 'ALL'
-    ? "SELECT operators FROM towers WHERE status='APPROVED'"
+    ? "SELECT operators FROM towers WHERE status='APPROVED' AND country='PL'"
     : source === 'UKE'
-    ? `SELECT operators FROM towers WHERE status='APPROVED' AND ${ukeViewSql('towers')}`
-    : "SELECT operators FROM towers WHERE status='APPROVED' AND source=?";
+    ? `SELECT operators FROM towers WHERE status='APPROVED' AND country='PL' AND ${ukeViewSql('towers')}`
+    : "SELECT operators FROM towers WHERE status='APPROVED' AND country='PL' AND source=?";
 
   const rows = (source === 'ALL' || source === 'UKE' ? db.prepare(sql).all() : db.prepare(sql).all(source)) as Array<{ operators: string }>;
 
@@ -652,16 +652,16 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
   }
 
   const allCounts = db.prepare(
-    "SELECT source, COUNT(*) as c FROM towers WHERE status='APPROVED' GROUP BY source"
+    "SELECT source, COUNT(*) as c FROM towers WHERE status='APPROVED' AND country='PL' GROUP BY source"
   ).all() as Array<{ source: string; c: number }>;
   const ukeTowersTotal = allCounts.find(r => r.source === 'UKE')?.c || 0;
   const btmapTowersTotal = allCounts.find(r => r.source === 'BTMAP')?.c || 0;
 
   const sql = source === 'ALL'
-    ? "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED'"
+    ? "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL'"
     : source === 'UKE'
-    ? `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND ${ukeViewSql('towers')}`
-    : "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND source=?";
+    ? `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL' AND ${ukeViewSql('towers')}`
+    : "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL' AND source=?";
 
   type TowerRow = {
     id: string;
@@ -892,7 +892,7 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
     const btmapBandCounts = new Map<string, number>();
 
     const allTowersWithSource = db.prepare(
-      "SELECT source, operators FROM towers WHERE status='APPROVED'"
+      "SELECT source, operators FROM towers WHERE status='APPROVED' AND country='PL'"
     ).all() as Array<{ source: string; operators: string }>;
 
     for (const t of allTowersWithSource) {

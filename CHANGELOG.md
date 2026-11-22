@@ -1,5 +1,19 @@
 # Changelog BTMap
 
+## Niewydane
+
+### Rumunia na mapie
+- **Stacje z Rumunii**: ponad 700 stacji Orange RO, Vodafone RO, Telekom RO i Digi RO z bazy NetMonstera użytkownika z Rumunii (za jego zgodą). Komórki wpisane pod kilkoma sieciami (współdzielenie RAN) trafiają do operatora, pod którym widziano je najczęściej.
+- **Filtry dopasowują się do kraju** na środku mapy: w Rumunii operatorzy RO i rumuńskie pasma, bez województw; wybory, których nie ma w nowym kraju, same się czyszczą.
+- **Dodawanie stacji w Rumunii**: formularz startuje w miejscu, które oglądasz, operatorzy i plan pasm zależą od kraju pinezki, walidacja sprawdza pasmo zamiast polskich zakresów operatorów.
+- **Wyszukiwarka**: prefiks `226 10` wskazuje Orange RO (`226 01` Vodafone, `226 03` Telekom, `226 05` Digi).
+- Rumuński regulator (ANCOM) nie publikuje wykazu stacji, więc w Rumunii są tylko dane społeczności.
+
+### Poprawki
+- **Filtr pasm** obejmuje komórki z bazy BTMap zapisane jako „1800 (b3)”.
+- **Karta stacji**: dla komórek społeczności zamiast pustego pola pozwolenia widać eNB:CID, PCI i EARFCN; raporty SI2PEM tylko dla stacji w Polsce.
+- **Statystyki** liczą tylko stacje w Polsce.
+
 ## v2.0.4 (2026-11-15)
 
 Wyszukiwanie komórek 5G SA prosto z NetMonstera, odnajdywanie stacji Play po gNB/eNB, rzeczywiste wysokości anten z Rejestru Urządzeń UKE, odświeżone statystyki i formularz zgłoszeń oraz seria poprawek synchronizacji, bezpieczeństwa i mapy.

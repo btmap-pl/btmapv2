@@ -5,8 +5,11 @@ import { createUkeSync } from './ukeSync.ts';
 import { createRadiolineSync } from './radiolineSync.ts';
 import { ensureRegistrySnapshot } from './stats.ts';
 import { installProcessGuards } from './processGuards.ts';
+import { applySeeds } from './seeds.ts';
 
 const db = openDatabase();
+// Community stations of countries without a public registry (Romania).
+try { applySeeds(db); } catch (err) { console.warn('[seeds] Błąd:', (err as Error).message); }
 // Baseline for growth statistics: the next UKE registry sync is compared against it.
 try { ensureRegistrySnapshot(db); } catch (err) { console.warn('[stats] Nie zapisano migawki bazowej:', (err as Error).message); }
 const si2pem = createSi2pemSync(db);

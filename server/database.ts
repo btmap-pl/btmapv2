@@ -120,6 +120,10 @@ export function openDatabase(
       INSERT INTO metadata(key,value) VALUES('pemOperatorReportsV1','1');
       COMMIT;`);
   }
+  // Country of a station (ISO code). Poland has the UKE registry; other countries hold only community stations.
+  const towerColumns = db.prepare('PRAGMA table_info(towers)').all() as Array<{ name: string }>;
+  if (!towerColumns.some(c => c.name === 'country')) db.exec("ALTER TABLE towers ADD COLUMN country TEXT NOT NULL DEFAULT 'PL'");
+  db.exec('CREATE INDEX IF NOT EXISTS towers_country ON towers(country)');
   const queueColumns = db.prepare('PRAGMA table_info(queue)').all();
   if (!queueColumns.some(column => column.name === 'userId')) db.exec('ALTER TABLE queue ADD COLUMN userId TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS queue_user ON queue(userId)');

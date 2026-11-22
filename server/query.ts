@@ -1,10 +1,12 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { MAP_STATION_LIMIT } from '../shared/mapLimits.ts';
+import { ROMANIAN_OPERATORS } from '../shared/countries.ts';
 import { withAzimuths } from './azimuths.ts';
 import { parseCellSearch, type ParsedCellId } from '../shared/cellSearch.ts';
 import { isNewBand, newEntryWindow, type NewEntryWindow } from '../shared/newEntries.ts';
 
-const majorOperators = ['Orange', 'T-Mobile', 'Play', 'Plus', 'PKP PLK'];
+// Named operators of every country; "Inne" means none of them.
+const majorOperators = ['Orange', 'T-Mobile', 'Play', 'Plus', 'PKP PLK', ...ROMANIAN_OPERATORS.map(op => op.name)];
 
 /**
  * Which stations belong to the UKE registry view: those imported from the registry, and community
@@ -146,7 +148,8 @@ export function towerWhere(query: Record<string, unknown>, window: NewEntryWindo
       bandClauses.push(`CASE json_extract(b.value, '$.tech') WHEN 'NR' THEN '5G' ELSE json_extract(b.value, '$.tech') END IN (${techs.map(() => '?').join(',')})`);
       params.push(...techs);
     }
-    if (bands.length) { bandClauses.push(`REPLACE(json_extract(b.value, '$.band'), 'MHz', '') IN (${bands.map(() => '?').join(',')})`); params.push(...bands); }
+    // UKE stores "1800", community cells "1800 (b3)": compare the leading MHz number.
+    if (bands.length) { bandClauses.push(`CAST(CAST(TRIM(REPLACE(json_extract(b.value, '$.band'), 'MHz', '')) AS INTEGER) AS TEXT) IN (${bands.map(() => '?').join(',')})`); params.push(...bands); }
     if (bandClauses.length) opClauses.push(`EXISTS (SELECT 1 FROM json_each(op.value, '$.bands') b WHERE ${bandClauses.join(' AND ')})`);
 
     if (modes5g.length) {

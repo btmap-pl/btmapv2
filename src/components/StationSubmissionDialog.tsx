@@ -42,8 +42,10 @@ import {
   calculateEci,
   getAvailableBandsForOperator,
   findBandAllocation,
+  bandPlanFor,
   POLISH_BAND_PLAN,
 } from '../../shared/cellValidation';
+import { COUNTRIES, countryAt } from '../../shared/countries';
 
 const PROVINCES = [
   'Dolnośląskie', 'Kujawsko-pomorskie', 'Lubelskie', 'Lubuskie', 'Łódzkie', 'Małopolskie',
@@ -156,6 +158,8 @@ interface UkePermitBand {
 
 interface Props {
   sourceTower?: Tower | null;
+  /** Where a new station starts when there is no source tower: the middle of the main map. */
+  initialCenter?: [number, number] | null;
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -577,7 +581,7 @@ function OwnerSelect({ value, options, onChange }: { value: string; options: str
   );
 }
 
-export default function StationSubmissionDialog({ sourceTower, onClose, onSuccess }: Props) {
+export default function StationSubmissionDialog({ sourceTower, initialCenter, onClose, onSuccess }: Props) {
   const [activeSourceTower, setActiveSourceTower] = useState<Tower | null>(sourceTower || null);
   const [showUkeLocations, setShowUkeLocations] = useState(true);
   const [ukeTowers, setUkeTowers] = useState<Tower[]>([]);
@@ -602,8 +606,9 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
   const [notes, setNotes] = useState(sourceTower?.notes || '');
 
   // Location
-  const [lat, setLat] = useState(sourceTower?.lat ? sourceTower.lat.toFixed(6) : '52.230000');
-  const [lng, setLng] = useState(sourceTower?.lng ? sourceTower.lng.toFixed(6) : '21.010000');
+  const start = sourceTower?.lat ? [sourceTower.lat, sourceTower.lng] : initialCenter && countryAt(initialCenter[0], initialCenter[1]) ? initialCenter : [52.23, 21.01];
+  const [lat, setLat] = useState(start[0].toFixed(6));
+  const [lng, setLng] = useState(start[1].toFixed(6));
   const [province, setProvince] = useState(sourceTower?.province || 'Mazowieckie');
   const [city, setCity] = useState(() => (sourceTower?.address ? sourceTower.address.split(',')[0].trim() : ''));
   const [address, setAddress] = useState(() => {
@@ -816,11 +821,20 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
     const b = Number(String(lng).replace(',', '.'));
     return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : [52.23, 21.01];
   });
+  // The pin decides the country: its operators, band plan and validation.
+  const country = useMemo(() => countryAt(mapCenter[0], mapCenter[1]), [mapCenter[0], mapCenter[1]]);
+  const countryOperators = useMemo(
+    () => (country ?? COUNTRIES.PL).operators.filter(o => o.name !== 'Inne' && o.name !== 'PKP PLK'),
+    [country]
+  );
+  useEffect(() => {
+    if (country && !countryOperators.some(o => o.name === operator)) setOperator(countryOperators[0].name);
+  }, [country, countryOperators, operator]);
 
   useEffect(() => {
     const a = Number(String(lat).replace(',', '.'));
     const b = Number(String(lng).replace(',', '.'));
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 48 || a > 56 || b < 13 || b > 26) return;
+    if (!countryAt(a, b)) return;
     const timer = setTimeout(() => {
       setMapCenter([a, b]);
     }, 400);
@@ -1075,13 +1089,13 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
   const cellValidation = useMemo(() => {
     const map: Record<string, Record<string, string>> = {};
     for (const c of cells) {
-      const errors = { ...validateCell(c, operator).errors };
+      const errors = { ...validateCell(c, operator, country).errors };
       if (!String(c.band || '').trim()) errors.band = 'Pasmo: wybierz pasmo z listy.';
       if (c.tech === 'LTE' && !String(c.nodeId ?? '').trim()) errors.nodeId = 'Wymagane podanie eNBID.';
       map[c.id!] = errors;
     }
     return map;
-  }, [cells, operator]);
+  }, [cells, operator, country]);
 
   const headerErrors = useMemo(() => {
     const e: Record<string, string> = {};
@@ -1101,8 +1115,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
     const e: Record<string, string> = {};
     const a = mapCenter[0];
     const b = mapCenter[1];
-    if (a < 49 || a > 55) e.lat = 'Szerokość geograficzna poza Polską (49-55).';
-    if (b < 14 || b > 24.5) e.lng = 'Długość geograficzna poza Polską (14-24,5).';
+    if (!countryAt(a, b)) e.lat = 'Stacja musi leżeć w Polsce albo w Rumunii.';
     if (!city.trim()) e.city = 'Podaj miejscowość.';
     if (!stationId.trim()) e.stationId = 'Podaj identyfikator stacji.';
     if (sectors.some(s => s.azimuth.trim() !== '' && !azimuthValid(Number(s.azimuth)))) e.azimuths = 'Azymut musi mieścić się w zakresie 0-359°.';
@@ -1147,7 +1160,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
           backhaul,
           city: city.trim(),
           address: [city.trim(), address.trim()].filter(Boolean).join(', '),
-          province,
+          province: (country?.code ?? 'PL') === 'PL' ? province : '',
           lat: mapCenter[0],
           lng: mapCenter[1],
           mastType,
@@ -1207,8 +1220,8 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
 
   // ---------- Cell table rendering ----------
   const renderBandCell = (cell: CellInput, err?: string) => {
-    const bands = getAvailableBandsForOperator(operator, cell.tech);
-    const alloc = cell.band ? findBandAllocation(cell.tech, cell.band) : undefined;
+    const bands = getAvailableBandsForOperator(operator, cell.tech, country);
+    const alloc = cell.band ? findBandAllocation(cell.tech, cell.band, bandPlanFor(operator, country)) : undefined;
     const known = bands.some(b => b.label === cell.band);
     const display = !cell.band ? (
       <span className="ss-placeholder">Wybierz ...</span>
@@ -1505,7 +1518,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                 </div>
                 <div className="ss-card-body">
                   <div className="ss-operator-selector" role="radiogroup" aria-label="Wybierz operatora sieci">
-                    {OPERATORS.slice(0, 4).map(o => {
+                    {countryOperators.map(o => {
                       const isSelected = operator === o.name;
                       return (
                         <button
@@ -1595,7 +1608,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                     </label>
                   </div>
 
-                  <div className="ss-field">
+                  {(country?.code ?? 'PL') === 'PL' && <div className="ss-field">
                     <span>Województwo</span>
                     <div className="ss-inline">
                       <SelectBox value={province} onChange={setProvince} className="ss-fit">
@@ -1609,7 +1622,7 @@ export default function StationSubmissionDialog({ sourceTower, onClose, onSucces
                         <Compass size={12} /> wykryto z GPS
                       </span>
                     </div>
-                  </div>
+                  </div>}
 
                   <div className="ss-grid-2">
                     <label className="ss-field">

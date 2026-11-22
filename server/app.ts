@@ -24,6 +24,7 @@ import {getTowerHistory, recordTowerChange} from './towerHistory.ts';
 import {getKmzCatalog, generateKmzArchive} from './kmzExport.ts';
 import {addCoverage,coverageMeta,coverageVersion,coverageTile,createTileCache,ensureCoverageSchema} from './coverage.ts';
 import {cleanNodeLinkRequest, resolveNodeLink, saveNodeLink, withNodeLinks, getNearestTowers} from './nodeLinks.ts';
+import { countryAt } from '../shared/countries.ts';
 
 type User = { id: string; email: string; nick: string; role: string; points: number; level: number };
 const publicUser = (user: Record<string, unknown>) => ({ id:user.id, email:user.email, nick:user.nick, role:user.role, points:user.points, level:user.level });
@@ -489,8 +490,8 @@ export function createApp(
     db.prepare(`
       INSERT INTO towers (
         id, stationId, address, province, lat, lng, operators,
-        mastType, owner, height, notes, source, addedBy, status, createdAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BTMAP', ?, 'APPROVED', ?)
+        mastType, owner, height, notes, source, addedBy, status, createdAt, country
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BTMAP', ?, 'APPROVED', ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         stationId = excluded.stationId,
         address = excluded.address,
@@ -502,6 +503,7 @@ export function createApp(
         owner = excluded.owner,
         height = excluded.height,
         notes = excluded.notes,
+        country = excluded.country,
         source = 'BTMAP'
     `).run(
       newId,
@@ -516,7 +518,8 @@ export function createApp(
       clean.height || null,
       clean.notes || null,
       userNick,
-      new Date().toISOString()
+      new Date().toISOString(),
+      countryAt(clean.lat, clean.lng)?.code ?? 'PL'
     );
     recordTowerChange(db, {
       towerId: newId,

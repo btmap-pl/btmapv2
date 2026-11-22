@@ -26,6 +26,7 @@ import {
 import type { Tower, Operator, Band, User, NodeLinkSuggestion } from '../types';
 import { cachedPemReports, freshPemReports, loadPemReports, pemSummary } from '../lib/pemCache';
 import PemReportsDialog from './PemReportsDialog';
+import { COUNTRIES, countryAt, type CountryCode } from '../../shared/countries';
 import PemReportList from './PemReportList';
 import StationComments from './StationComments';
 import NodeLinksSection from './NodeLinksSection';
@@ -247,7 +248,13 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                   <tbody>
                     {techBands.map((b, idx) => {
                       const meta = bandMeta(tech, b.band);
-                      const permitNo = b.permit?.match(/^([^\[-]+)/)?.[1]?.trim() || (b.permit || '—');
+                      // Community cells carry no permit: show the cell identity reported from the field instead.
+                      const cellIdentity = [
+                        b.nodeId != null ? `${tech === '5G' ? 'gNB' : 'eNB'} ${b.nodeId}${b.cellId != null ? `:${b.cellId}` : ''}` : null,
+                        b.pci != null ? `PCI ${b.pci}` : null,
+                        b.earfcn != null ? `${tech === '5G' ? 'NR-ARFCN' : tech === 'LTE' ? 'EARFCN' : 'ARFCN'} ${b.earfcn}` : null,
+                      ].filter(Boolean).join(' · ');
+                      const permitNo = b.permit?.match(/^([^\[-]+)/)?.[1]?.trim() || b.permit || cellIdentity || '—';
                       const permitType = b.permit?.match(/\[([^\]]+)\]/)?.[1] || null;
                       const expMatch = b.permit?.match(/expires\s+(\d{4}-\d{2}-\d{2})/);
                       const wpisMatch = b.entryDate || b.permit?.match(/wpis\s+(\d{4}-\d{2}-\d{2})/)?.[1] || null;
@@ -364,6 +371,9 @@ export default function DetailsPanel({
     setNavOpen(false);
   }, [tower.id]);
 
+  const towerCountry = tower.country ? COUNTRIES[tower.country as CountryCode] : countryAt(tower.lat, tower.lng);
+  const isPolish = (towerCountry?.code ?? 'PL') === 'PL';
+
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -386,7 +396,9 @@ export default function DetailsPanel({
           if (active) setReportLoading(false);
         });
 
-    if (!saved || !freshPemReports(saved) || reportRetry > 0) void load();
+    // SI2PEM covers Poland only.
+    if (!isPolish) setReportLoading(false);
+    else if (!saved || !freshPemReports(saved) || reportRetry > 0) void load();
     else setReportLoading(false);
 
     return () => {
@@ -550,7 +562,7 @@ export default function DetailsPanel({
         <div className="station-sheet-meta">
           <span>
             <MapPin size={13} aria-hidden="true" />
-            {tower.province || 'Polska'}
+            {isPolish ? (tower.province || 'Polska') : [tower.province, towerCountry?.name[isPl ? 'pl' : 'en']].filter(Boolean).join(', ')}
           </span>
           {tower.mastType && (
             <span>
@@ -649,9 +661,9 @@ export default function DetailsPanel({
           <div>
             <dt>
               <Globe size={16} />
-              {t.detailsProvince}
+              {isPolish ? t.detailsProvince : (isPl ? 'Kraj' : 'Country')}
             </dt>
-            <dd>{tower.province || (isPl ? 'Brak danych' : 'No data')}</dd>
+            <dd>{isPolish ? (tower.province || (isPl ? 'Brak danych' : 'No data')) : towerCountry?.name[isPl ? 'pl' : 'en']}</dd>
           </div>
           <div>
             <dt>
@@ -666,7 +678,7 @@ export default function DetailsPanel({
                 : tower.operators[0]?.stationIds?.join(', ') || tower.stationId || tower.id}
             </dd>
           </div>
-          <div className="station-report-fact">
+          {isPolish && <div className="station-report-fact">
             <dt>
               <Activity size={16} />
               {isPl ? 'Raporty PEM' : 'PEM Reports'}
@@ -703,7 +715,7 @@ export default function DetailsPanel({
                 onSelect={report => setReportOpen(report.id)}
               />
             </dd>
-          </div>
+          </div>}
           {tower.height != null && tower.height > 0 && (
             <div>
               <dt>

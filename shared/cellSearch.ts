@@ -38,6 +38,14 @@ const POLISH_MNC_OPERATORS: Record<string, string> = {
   '06': 'Play',
 };
 
+/** Romanian MNCs (MCC 226); stations there come from the community. */
+const ROMANIAN_MNC_OPERATORS: Record<string, string> = {
+  '01': 'Vodafone RO',
+  '03': 'Telekom RO',
+  '05': 'Digi RO',
+  '10': 'Orange RO',
+};
+
 /** UKE band label of a downlink frequency (Polish allocations). C-band is listed as 3500 or 3600 MHz. */
 const DOWNLINK_BANDS: Array<{ min: number; max: number; bands: string[] }> = [
   { min: 758, max: 788, bands: ['700'] },
@@ -141,8 +149,9 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
 
   // 0. Context: PLMN prefix ("260 06", "26006-"), ARFCN and tech words decide the operator and LTE vs 5G.
   // The prefix is only taken when an identifier of 4+ digits follows, so "26006" or "26006:35" stay node IDs.
-  const plmnMatch = raw.match(/^(?:plmn\s*[:=]?\s*)?260[\s-]?(0\d)[\s\/:,;-]+(?=\D*\d{4})/i);
-  const mnc = plmnMatch ? plmnMatch[1] : undefined;
+  const plmnMatch = raw.match(/^(?:plmn\s*[:=]?\s*)?(260|226)[\s-]?(\d\d)[\s\/:,;-]+(?=\D*\d{4})/i);
+  const mnc = plmnMatch ? plmnMatch[2] : undefined;
+  const mncOperators = plmnMatch?.[1] === '226' ? ROMANIAN_MNC_OPERATORS : POLISH_MNC_OPERATORS;
   const body = plmnMatch ? raw.slice(plmnMatch[0].length) : raw;
 
   const tokens = body.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -155,7 +164,7 @@ export function parseCellSearch(input: string | null | undefined): ParsedCellId 
   // The ARFCN gives the band, and in C-band also the operator (each holds its own 100 MHz block).
   const arfcnMhz = arfcn !== undefined && !/^u$/i.test(arfcnMatch?.[1] ?? '') ? arfcnToMhz(arfcn, arfcnIsNr) : null;
   const arfcnBands = bandsForMhz(arfcnMhz);
-  const operator = (mnc ? POLISH_MNC_OPERATORS[mnc] : undefined) ?? (arfcnIsNr ? cBandOperator(arfcnMhz) : undefined);
+  const operator = (mnc ? mncOperators[mnc] : undefined) ?? (arfcnIsNr ? cBandOperator(arfcnMhz) : undefined);
 
   // 1. Check for explicit keywords: eNB, eNodeB, gNB, gNodeB, ECI, NCI, CID, LCID, RNC, TAC, PCI
   const gnbCidMatch = body.match(/(?:\b|_)(?:gnb|gnodeb)(?:[:_\s]*cid)?\s*[:=]?\s*(\d{4,8})\s*[:\/-]\s*(\d{1,4})/i);

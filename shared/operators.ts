@@ -7,7 +7,17 @@ export const OPERATORS = [
   { name: 'Inne', color: '#788992' },
 ] as const;
 
+/** Operators outside Poland, kept apart so "Orange RO" never folds into the Polish Orange. */
+const FOREIGN_OPERATORS = [
+  { name: 'Orange RO', color: '#ff7900' },
+  { name: 'Vodafone RO', color: '#e60000' },
+  { name: 'Telekom RO', color: '#e20074' },
+  { name: 'Digi RO', color: '#1f6fd1' },
+] as const;
+
 export function operatorName(value: string) {
+  const foreign = FOREIGN_OPERATORS.find(op => op.name.toLowerCase() === value.trim().toLowerCase());
+  if (foreign) return foreign.name;
   const name = value.trim().toLocaleLowerCase('pl-PL').replace(/[\u2010-\u2015]/g, '-');
   if (/\borange\b/.test(name)) return 'Orange';
   if (/\bt[\s-]*mobile\b/.test(name)) return 'T-Mobile';
@@ -18,4 +28,4 @@ export function operatorName(value: string) {
 }
 
 export const operatorColor = (name: string) =>
-  OPERATORS.find(op => op.name === operatorName(name))?.color || '#788992';
+  [...OPERATORS, ...FOREIGN_OPERATORS].find(op => op.name === operatorName(name))?.color || '#788992';
