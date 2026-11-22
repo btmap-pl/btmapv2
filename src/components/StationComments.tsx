@@ -11,7 +11,6 @@ import {
   Plus,
   Loader2,
   AlertCircle,
-  Sparkles,
   Maximize2,
   Download,
 } from 'lucide-react';
@@ -215,10 +214,6 @@ export default function StationComments({
           <h3>{isPl ? 'Komentarze i zdjęcia z terenu' : 'Field Comments & Photos'}</h3>
           <span className="comments-count-pill">{comments.length}</span>
         </div>
-        <span className="webp-auto-badge" title="Wszystkie zdjęcia są automatycznie optymalizowane do lekkiego formatu WebP">
-          <Sparkles size={12} />
-          <span>WebP Auto</span>
-        </span>
       </div>
 
       {/* Add comment form or login callout */}
