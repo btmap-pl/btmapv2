@@ -15,7 +15,7 @@
 - **Edycja stacji z bazy BTMap** zmienia ją na miejscu zamiast tworzyć kopię.
 
 ### Opcje tylko tam, gdzie działają
-- Poza Polską filtry i karta stacji pokazują tylko to, co ma dane: bez warstw PEM i radiolinii, wyboru źródła UKE, CDMA/IoT i audytu operatorów (dane z Polski); profil terenu zostaje (wysokości z Open-Meteo).
+- Poza Polską pasek mapy, filtry i karta stacji pokazują tylko to, co ma dane: bez mapy zasięgu, warstw PEM i radiolinii, wyboru źródła UKE, CDMA/IoT, audytu operatorów i profilu terenu (wymaga parametrów anten z SI2PEM).
 
 ### Poprawki
 - **Filtr pasm** obejmuje komórki z bazy BTMap zapisane jako „1800 (b3)”.

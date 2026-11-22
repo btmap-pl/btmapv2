@@ -562,7 +562,7 @@ export default function DetailsPanel({
 
           {/* Action buttons on top right */}
           <div className="station-sheet-actions">
-            {onOpenAreaEvaluation && isPolish && (
+            {onOpenAreaEvaluation && towerCountry?.features.areaEvaluation !== false && (
               <button
                 type="button"
                 className="header-profile-btn"
@@ -574,7 +574,7 @@ export default function DetailsPanel({
                 <span>{t.detailsAudit}</span>
               </button>
             )}
-            {onOpenTerrainProfile && (
+            {onOpenTerrainProfile && towerCountry?.features.terrainProfile !== false && (
               <button
                 type="button"
                 className="header-profile-btn"

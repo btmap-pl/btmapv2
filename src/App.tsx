@@ -261,6 +261,7 @@ export default function App(){
     });
     if(!country.features.pem)setShowPem(false);
     if(!country.features.radiolines)setShowRadiolines(false);
+    if(!country.features.coverage)setShowCoverage(false);
   },[country]);
   const changeView=(next:View)=>{
     if(next!=='map'){setSelected(null);setMap(null);}
@@ -416,7 +417,7 @@ export default function App(){
               onActiveChange={setIsSearchActive}
             />
             <div className="map-searchbar-actions">
-              <button
+              {country.features.coverage&&<button
                 type="button"
                 className={`filter-trigger is-compactable ${showCoverage ? 'selected' : ''}`}
                 onClick={() => setShowCoverage(prev => !prev)}
@@ -426,8 +427,8 @@ export default function App(){
               >
                 <Signal size={17} />
                 <span>{lang === 'pl' ? 'Zasięg' : 'Coverage'}</span>
-              </button>
-              <button
+              </button>}
+              {country.features.radiolines&&<button
                 type="button"
                 className={`filter-trigger is-compactable ${showRadiolines ? 'selected' : ''}`}
                 onClick={() => setShowRadiolines(prev => !prev)}
@@ -438,8 +439,8 @@ export default function App(){
                 <Radio size={17} />
                 <span>{lang === 'pl' ? 'Radiolinie' : 'Links'}</span>
                 {showRadiolines && radiolines.data.length > 0 && <b>{radiolines.data.length}</b>}
-              </button>
-              <button
+              </button>}
+              {country.features.areaEvaluation&&<button
                 type="button"
                 className={`filter-trigger is-compactable ${evalTarget || isPickingEvalTarget ? 'selected' : ''}`}
                 onClick={() => {
@@ -459,7 +460,7 @@ export default function App(){
               >
                 <Radar size={17} />
                 <span>{t.audit}</span>
-              </button>
+              </button>}
               <button
                 type="button"
                 className={`filter-trigger ${panel==='filters'||filterTotal?'selected':''}`}

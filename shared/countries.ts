@@ -23,8 +23,12 @@ export interface Country {
   provinces: string[];
   /** Technology filter values that have data there. */
   techs: string[];
-  /** Map tools backed by Polish sources (SI2PEM, UKE radiolines, operator audit). */
-  features: { pem: boolean; radiolines: boolean; areaEvaluation: boolean };
+  /**
+   * Map tools backed by Polish sources: SI2PEM (PEM layer, and the antenna parameters the terrain
+   * profile needs), UKE radiolines, the audit of the four Polish operators, and the crowdsourced
+   * coverage map (Polish networks only so far).
+   */
+  features: { pem: boolean; radiolines: boolean; areaEvaluation: boolean; terrainProfile: boolean; coverage: boolean };
 }
 
 export const ROMANIAN_OPERATORS: CountryOperator[] = [
@@ -44,7 +48,7 @@ export const COUNTRIES: Record<CountryCode, Country> = {
     operators: OPERATORS.map(op => ({ name: op.name, color: op.color })),
     bands: ['420', '450', '700', '800', '900', '1800', '2100', '2600', '3500', '3600'],
     techs: ['5G', 'LTE', 'UMTS', 'GSM', 'IOT', 'CDMA'],
-    features: { pem: true, radiolines: true, areaEvaluation: true },
+    features: { pem: true, radiolines: true, areaEvaluation: true, terrainProfile: true, coverage: true },
     provinces: ['Dolnośląskie', 'Kujawsko-pomorskie', 'Lubelskie', 'Lubuskie', 'Łódzkie', 'Małopolskie', 'Mazowieckie', 'Opolskie', 'Podkarpackie', 'Podlaskie', 'Pomorskie', 'Śląskie', 'Świętokrzyskie', 'Warmińsko-mazurskie', 'Wielkopolskie', 'Zachodniopomorskie'],
   },
   RO: {
@@ -57,7 +61,7 @@ export const COUNTRIES: Record<CountryCode, Country> = {
     bands: ['700', '800', '900', '1800', '2100', '2600', '3500'],
     provinces: [],
     techs: ['5G', 'LTE', 'UMTS', 'GSM'],
-    features: { pem: false, radiolines: false, areaEvaluation: false },
+    features: { pem: false, radiolines: false, areaEvaluation: false, terrainProfile: false, coverage: false },
   },
 };
 
