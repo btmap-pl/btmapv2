@@ -25,6 +25,7 @@ import {getKmzCatalog, generateKmzArchive} from './kmzExport.ts';
 import {addCoverage,coverageMeta,coverageVersion,coverageTile,createTileCache,ensureCoverageSchema} from './coverage.ts';
 import {cleanNodeLinkRequest, resolveNodeLink, saveNodeLink, withNodeLinks, getNearestTowers} from './nodeLinks.ts';
 import { countryAt } from '../shared/countries.ts';
+import { stampCells } from '../shared/cellStamps.ts';
 
 type User = { id: string; email: string; nick: string; role: string; points: number; level: number };
 const publicUser = (user: Record<string, unknown>) => ({ id:user.id, email:user.email, nick:user.nick, role:user.role, points:user.points, level:user.level });
@@ -463,11 +464,24 @@ export function createApp(
     if (!clean.operator || !Number.isFinite(clean.lat) || !Number.isFinite(clean.lng)) {
       throw new Error('Zgłoszenie nie zawiera operatora lub poprawnych współrzędnych stacji.');
     }
-    const newId = clean.sourceTowerId ? ('BTMAP_' + clean.sourceTowerId.replace(/^UKE_/, '')) : ('BTMAP_' + randomUUID().slice(0, 12));
+    // A BTMap station is updated in place; a registry station gets its BTMap counterpart.
+    const newId = clean.sourceTowerId
+      ? (clean.sourceTowerId.startsWith('BTMAP_') ? clean.sourceTowerId : 'BTMAP_' + clean.sourceTowerId.replace(/^UKE_/, ''))
+      : ('BTMAP_' + randomUUID().slice(0, 12));
+    // Cells as they were before this save: the BTMap record, or the registry station it starts from.
+    const previousRow = (db.prepare('SELECT operators FROM towers WHERE id=?').get(newId)
+      ?? (clean.sourceTowerId ? db.prepare('SELECT operators FROM towers WHERE id=?').get(clean.sourceTowerId) : undefined)) as { operators?: string } | undefined;
+    let previousCells: Array<Record<string, unknown>> | null = null;
+    if (previousRow) {
+      try {
+        const prevOps = JSON.parse(String(previousRow.operators || '[]')) as Array<{ name?: string; bands?: Array<Record<string, unknown>> }>;
+        previousCells = (prevOps.find(o => o.name === clean.operator) ?? prevOps[0])?.bands ?? [];
+      } catch { previousCells = []; }
+    }
     const ops = [{
       name: clean.operator,
       stationIds: clean.stationId ? [clean.stationId] : [],
-      bands: Array.isArray(clean.cells) ? clean.cells.map((c: any) => ({
+      bands: stampCells(Array.isArray(clean.cells) ? clean.cells.map((c: any) => ({
         tech: c.tech,
         band: c.band,
         pci: c.pci,
@@ -485,7 +499,7 @@ export function createApp(
         rnc: cellNumber(c.rnc),
         bsic: cellNumber(c.bsic),
         bandwidth: cellNumber(c.bandwidth),
-      })) : []
+      })) : [], previousCells, new Date().toISOString())
     }];
     db.prepare(`
       INSERT INTO towers (

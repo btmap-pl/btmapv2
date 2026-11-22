@@ -9,6 +9,14 @@
 - **Wyszukiwarka**: prefiks `226 10` wskazuje Orange RO (`226 01` Vodafone, `226 03` Telekom, `226 05` Digi).
 - Rumuński regulator (ANCOM) nie publikuje wykazu stacji, więc w Rumunii są tylko dane społeczności.
 
+### Komórki w karcie stacji
+- **Tabela jak w logu NetMonstera**: komórki z bazy BTMap w kolumnach Pasmo, Azymut, eNBID/gNBID, CLID, ECI/NCI, PCI, EARFCN (z częstotliwością MHz) i Notatki; w nagłówku technologii TAC/LAC.
+- **Nowe komórki na zielono, zmienione na żółto** przez 30 dni, z datą dodania lub zmiany. Daty zapisują się przy każdej zmianie stacji; nowe pozwolenia UKE też podświetlają się na zielono.
+- **Edycja stacji z bazy BTMap** zmienia ją na miejscu zamiast tworzyć kopię.
+
+### Opcje tylko tam, gdzie działają
+- Poza Polską filtry i karta stacji pokazują tylko to, co ma dane: bez warstw PEM i radiolinii, wyboru źródła UKE, CDMA/IoT i audytu operatorów (dane z Polski); profil terenu zostaje (wysokości z Open-Meteo).
+
 ### Poprawki
 - **Filtr pasm** obejmuje komórki z bazy BTMap zapisane jako „1800 (b3)”.
 - **Karta stacji**: dla komórek społeczności zamiast pustego pola pozwolenia widać eNB:CID, PCI i EARFCN; raporty SI2PEM tylko dla stacji w Polsce.

@@ -254,8 +254,13 @@ export default function App(){
       const operators=f.operators.filter(o=>country.operators.some(c=>c.name===o));
       const bands=f.bands.filter(b=>country.bands.includes(b));
       const province=country.provinces.includes(f.province)?f.province:'';
-      return operators.length===f.operators.length&&bands.length===f.bands.length&&province===f.province?f:{...f,operators,bands,province};
+      const techs=f.techs.filter(x=>country.techs.includes(x));
+      const source=country.registry?f.source:'ALL';
+      return operators.length===f.operators.length&&bands.length===f.bands.length&&techs.length===f.techs.length&&province===f.province&&source===f.source
+        ?f:{...f,operators,bands,techs,province,source};
     });
+    if(!country.features.pem)setShowPem(false);
+    if(!country.features.radiolines)setShowRadiolines(false);
   },[country]);
   const changeView=(next:View)=>{
     if(next!=='map'){setSelected(null);setMap(null);}
@@ -377,7 +382,7 @@ export default function App(){
               <button type="button" className="ae-pick-cancel" onClick={handleCancelEvalPick}>{t.cancel}</button>
             </div>
           )}
-          <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{filters.source==='UKE'?'UKE':filters.source==='BTMAP'?'BTMap':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
+          <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{!country.registry||filters.source==='BTMAP'?'BTMap':filters.source==='UKE'?'UKE':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
           <div className={`map-searchbar ${isSearchActive ? 'search-active' : ''}`}>
             <Search
               getCenter={getMapCenter}

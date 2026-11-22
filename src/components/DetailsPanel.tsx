@@ -27,6 +27,8 @@ import type { Tower, Operator, Band, User, NodeLinkSuggestion } from '../types';
 import { cachedPemReports, freshPemReports, loadPemReports, pemSummary } from '../lib/pemCache';
 import PemReportsDialog from './PemReportsDialog';
 import { COUNTRIES, countryAt, type CountryCode } from '../../shared/countries';
+import { channelMhz } from '../../shared/radioBands';
+import { calculateEci } from '../../shared/cellValidation';
 import PemReportList from './PemReportList';
 import StationComments from './StationComments';
 import NodeLinksSection from './NodeLinksSection';
@@ -140,6 +142,75 @@ function recordedModes(bands: Band[]): Array<'SA' | 'NSA'> {
   return (['SA', 'NSA'] as const).filter(mode => modes.has(mode));
 }
 
+/** Cells added or changed within this many days are highlighted (green / yellow). */
+const RECENT_CELL_DAYS = 30;
+const isRecent = (date?: string) => Boolean(date) && Date.now() - Date.parse(date!) < RECENT_CELL_DAYS * 86_400_000;
+
+/** Community cells (no UKE permit) carry their field identity: shown in columns, like a NetMonster log. */
+const isFieldCells = (bands: Band[]) =>
+  bands.every(b => !b.permit) && bands.some(b => b.nodeId != null || b.pci != null || b.earfcn != null);
+
+function cellStatus(b: Band): 'new' | 'modified' | null {
+  if (isRecent(b.modifiedAt)) return 'modified';
+  if (isRecent(b.addedAt) || b.isNew) return 'new';
+  return null;
+}
+
+function FieldCellTable({ tech, bands, isPl }: { tech: string; bands: Band[]; isPl: boolean }) {
+  const nr = tech === '5G';
+  const legacy = tech === 'UMTS' || tech === 'GSM';
+  const nodeLabel = nr ? 'gNBID' : tech === 'LTE' ? 'eNBID' : tech === 'UMTS' ? 'RNC' : '—';
+  const physLabel = tech === 'UMTS' ? 'PSC' : tech === 'GSM' ? 'BSIC' : 'PCI';
+  const channelLabel = nr ? 'NR-ARFCN' : tech === 'LTE' ? 'EARFCN' : tech === 'UMTS' ? 'UARFCN' : 'ARFCN';
+  const date = (d?: string) => (d ? new Date(d).toLocaleDateString(isPl ? 'pl-PL' : 'en-GB', { day: 'numeric', month: 'short' }) : '');
+  return (
+    <div className="cell-table-wrap">
+      <table className="cell-table cell-table-field">
+        <thead>
+          <tr>
+            <th>{isPl ? 'Pasmo' : 'Band'}</th>
+            <th>{isPl ? 'Azymut' : 'Azimuth'}</th>
+            {!legacy || tech === 'UMTS' ? <th>{nodeLabel}</th> : null}
+            <th>{legacy ? 'CID' : 'CLID'}</th>
+            {!legacy && <th>{nr ? 'NCI' : 'ECI'}</th>}
+            <th>{physLabel}</th>
+            <th>{channelLabel}</th>
+            <th>{isPl ? 'Notatki' : 'Notes'}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bands.map((b, idx) => {
+            const status = cellStatus(b);
+            const mhz = channelMhz(tech, b.earfcn);
+            const eci = !legacy && b.nodeId != null && b.cellId != null ? calculateEci(b.nodeId, b.cellId, nr ? '5G' : 'LTE') : null;
+            return (
+              <tr key={idx} className={status ? `cell-row-${status}` : undefined}>
+                <td className="cell-col-pasmo">
+                  <strong className="cell-pasmo-main">{b.band || '—'}</strong>
+                  {b.mode && <span className={`cell-mode-tag mode-${b.mode.toLowerCase()}`}>{b.mode}</span>}
+                </td>
+                <td>{b.azimuth != null ? `${b.azimuth}°` : '—'}</td>
+                {!legacy || tech === 'UMTS' ? <td className="cell-num">{b.nodeId ?? '—'}</td> : null}
+                <td className="cell-num">{b.cellId ?? '—'}</td>
+                {!legacy && <td className="cell-num">{eci ?? '—'}</td>}
+                <td className="cell-num">{b.pci ?? '—'}</td>
+                <td className="cell-num">
+                  {b.earfcn ?? '—'}
+                  {mhz != null && <span className="cell-freq"> {mhz.toFixed(1)} MHz</span>}
+                </td>
+                <td>
+                  {status === 'modified' && <span className="cell-date-badge is-modified" title={isPl ? 'Zmieniona komórka' : 'Changed cell'}>✎ {date(b.modifiedAt)}</span>}
+                  {status === 'new' && <span className="cell-date-badge is-new" title={isPl ? 'Nowa komórka' : 'New cell'}>+ {date(b.addedAt) || (isPl ? 'nowa' : 'new')}</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: string) => void }) {
   const { t, lang } = useI18n();
   const isPl = lang === 'pl';
@@ -217,6 +288,15 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                     <strong>{recordedModes(techBands).join(' / ')}</strong>
                   </span>
                 )}
+                {(() => {
+                  const areas = [...new Set(techBands.map(b => (tech === 'UMTS' || tech === 'GSM' ? b.lac : b.tac)).filter(v => v != null))];
+                  return areas.length === 1 ? (
+                    <span className="cell-tag">
+                      <span>{tech === 'UMTS' || tech === 'GSM' ? 'LAC' : 'TAC'}</span>
+                      <strong>{areas[0]}</strong>
+                    </span>
+                  ) : null;
+                })()}
                 {op.stationIds?.[0] && (
                   <span
                     className="cell-tag"
@@ -235,7 +315,8 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
               <ChevronDown size={17} className={`cell-chevron ${isCollapsed ? 'rotated' : ''}`} />
             </button>
 
-            {!isCollapsed && (
+            {!isCollapsed && isFieldCells(techBands) && <FieldCellTable tech={tech} bands={techBands} isPl={isPl} />}
+            {!isCollapsed && !isFieldCells(techBands) && (
               <div className="cell-table-wrap">
                 <table className="cell-table">
                   <thead>
@@ -271,7 +352,7 @@ function CellDetailsBlock({ op, onNotice }: { op: Operator; onNotice: (msg: stri
                         : (b.azimuth != null ? [b.azimuth] : []);
 
                       return (
-                        <tr key={idx}>
+                        <tr key={idx} className={cellStatus(b) ? `cell-row-${cellStatus(b)}` : undefined}>
                           <td className="cell-col-pasmo">
                             <strong className="cell-pasmo-main">{b.band}</strong>
                             {/* Only a mode entered for the cell is shown; the UKE registry has none and it is not inferred from the band. */}
@@ -481,7 +562,7 @@ export default function DetailsPanel({
 
           {/* Action buttons on top right */}
           <div className="station-sheet-actions">
-            {onOpenAreaEvaluation && (
+            {onOpenAreaEvaluation && isPolish && (
               <button
                 type="button"
                 className="header-profile-btn"

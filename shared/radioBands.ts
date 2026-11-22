@@ -51,3 +51,33 @@ export function bandOfChannel(tech: string, channel: number | null | undefined):
   }
   return null;
 }
+
+// Lowest downlink frequency and first channel of each LTE band (TS 36.101 table 5.7.3-1).
+const LTE_DL: Array<[first: number, last: number, fDlLow: number]> = [
+  [0, 599, 2110], [1200, 1949, 1805], [2750, 3449, 2620], [3450, 3799, 925], [6150, 6449, 791],
+  [9210, 9659, 758], [9920, 10359, 1452], [37750, 38249, 2570], [38650, 39649, 2300],
+  [41590, 43589, 3400], [43590, 45589, 3600],
+];
+
+/** Downlink frequency of a channel in MHz, rounded to 0.1; null when unknown. */
+export function channelMhz(tech: string, channel: number | null | undefined): number | null {
+  if (channel == null || !Number.isFinite(channel) || channel < 0) return null;
+  const t = tech.toUpperCase();
+  const round = (v: number) => Math.round(v * 10) / 10;
+  if (t === 'LTE' || t === '4G') {
+    const row = LTE_DL.find(([first, last]) => channel >= first && channel <= last);
+    return row ? round(row[2] + 0.1 * (channel - row[0])) : null;
+  }
+  if (t === '5G' || t === 'NR') { const f = nrArfcnMhz(channel); return f == null ? null : round(f); }
+  if (t === 'UMTS' || t === '3G') {
+    if (channel >= 10562 && channel <= 10838) return round(channel / 5);
+    if (channel >= 2937 && channel <= 3088) return round(channel / 5 + 340);
+    return null;
+  }
+  if (t === 'GSM' || t === '2G') {
+    if (channel <= 124) return round(935 + 0.2 * channel);
+    if (channel >= 975 && channel <= 1023) return round(935 + 0.2 * (channel - 1024));
+    if (channel >= 512 && channel <= 885) return round(1805.2 + 0.2 * (channel - 512));
+  }
+  return null;
+}

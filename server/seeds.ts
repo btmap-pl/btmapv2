@@ -29,7 +29,9 @@ export function applySeeds(db: DatabaseSync, dir = SEED_DIR) {
     const ids = seed.towers.map(t => t.id);
     db.exec('BEGIN');
     try {
-      db.prepare('DELETE FROM towers WHERE addedBy=? AND source=?').run(seed.credit, 'BTMAP');
+      // Stations users have edited since are theirs now: a newer seed never overwrites them.
+      const edited = new Set((db.prepare('SELECT DISTINCT towerId FROM tower_history').all() as Array<{ towerId: string }>).map(r => r.towerId));
+      db.prepare('DELETE FROM towers WHERE addedBy=? AND source=? AND id NOT IN (SELECT towerId FROM tower_history)').run(seed.credit, 'BTMAP');
       db.prepare('DELETE FROM node_links WHERE addedBy=?').run(seed.credit);
       const insertTower = db.prepare(`INSERT OR REPLACE INTO towers
         (id, stationId, address, province, lat, lng, operators, source, addedBy, status, createdAt, country)
@@ -37,6 +39,7 @@ export function applySeeds(db: DatabaseSync, dir = SEED_DIR) {
       const insertLink = db.prepare(`INSERT OR IGNORE INTO node_links (operator, tech, nodeId, stationId, towerId, addedBy, createdAt)
         VALUES (?, ?, ?, NULL, ?, ?, ?)`);
       for (const t of seed.towers) {
+        if (edited.has(t.id)) continue;
         const operators = [{
           name: t.operator,
           color: operatorColor(t.operator),

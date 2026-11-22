@@ -1,6 +1,6 @@
 export type Theme = 'light' | 'dark';
 export type View = 'map' | 'database' | 'stats' | 'kmz' | 'guides' | 'admin' | 'changelog' | 'coverage';
-export interface Band { tech:string; band:string; duplex?:'FDD'|'TDD'|string; status?:string; permit?:string; entryDate?:string; sectors?:number; azimuth?:number; azimuths?:number[]; mode?:'NSA'|'SA'; pci?:number; earfcn?:number; nodeId?:number|null; cellId?:number|null; isIot?:boolean; cellType?:string; isNew?:boolean; }
+export interface Band { tech:string; band:string; duplex?:'FDD'|'TDD'|string; status?:string; permit?:string; entryDate?:string; sectors?:number; azimuth?:number; azimuths?:number[]; mode?:'NSA'|'SA'; pci?:number; earfcn?:number; nodeId?:number|null; cellId?:number|null; tac?:number|null; lac?:number|null; addedAt?:string; modifiedAt?:string; isIot?:boolean; cellType?:string; isNew?:boolean; }
 export interface Operator { name:string; color?:string; bands:Band[]; stationIds?:string[]; ukePermitId?:string; azimuths?:number[]; }
 export interface PemReportSummary { count:number; partial:boolean; checkedAt:string; }
 export interface Tower { id:string; stationId?:string; address:string; province:string; lat:number; lng:number; operators:Operator[]; source:'BTMAP' | 'UKE' | string; country?:string; notes?:string; height?:number; mastType?:string; createdAt?:string; pemReportsByOperator?:Record<string,PemReportSummary>; azimuths?:number[]; azimuthsSource?:'si2pem'|'verified'|'uke'|'station'|'unknown'; isNew?:boolean; nodeLinks?:NodeLink[]; distanceKm?:number; linkedElsewhere?:boolean; }

@@ -78,11 +78,14 @@ export default function Filters({
     </div>
   </div>;
 
+  // Layers and choices backed by Polish sources are offered only where they have data.
+  const showPem = Boolean(onPemChange) && country.features.pem;
+  const showRadiolines = Boolean(onRadiolinesChange) && country.features.radiolines;
   return <div className="station-filters">
-    {(onPemChange || onAzimuthsChange || onRadiolinesChange) && (
+    {(showPem || onAzimuthsChange || showRadiolines) && (
       <fieldset className="filter-group pem-layer-group">
         <legend>{t.filterLayers}</legend>
-        {onPemChange && (
+        {showPem && onPemChange && (
           <>
             <label className="pem-layer-toggle">
               <input type="checkbox" checked={pemEnabled} onChange={e=>onPemChange(e.target.checked)}/>
@@ -99,7 +102,7 @@ export default function Filters({
             <span className="azimuth-layer-key" aria-hidden="true"><Compass size={14}/></span>
           </label>
         )}
-        {onRadiolinesChange && (
+        {showRadiolines && onRadiolinesChange && (
           <>
             <label className="pem-layer-toggle radiolines-layer-toggle">
               <input type="checkbox" checked={radiolinesEnabled} onChange={e=>onRadiolinesChange(e.target.checked)}/>
@@ -111,7 +114,7 @@ export default function Filters({
         )}
       </fieldset>
     )}
-    <fieldset className="filter-group">
+    {country.registry && <fieldset className="filter-group">
       <legend>{t.filterSource} <span>{filters.source === 'BTMAP' ? t.filterSourceDb : filters.source === 'UKE' ? t.filterSourceUke : t.filterSourceAll}</span></legend>
       <div className="filter-options source-filters">
         <button
@@ -145,7 +148,7 @@ export default function Filters({
           <span>{t.filterSourceUke}</span>
         </button>
       </div>
-    </fieldset>
+    </fieldset>}
 
     <fieldset className="filter-group">
       <legend>{t.filterOperators} <span>{filters.operators.length ? t.filterSelectedCount(filters.operators.length) : t.filterAll}</span></legend>
@@ -163,7 +166,7 @@ export default function Filters({
     <fieldset className="filter-group">
       <legend>{t.filterTechs} <span>{filters.techs.length ? t.filterSelectedCount(filters.techs.length) : t.filterAllFmt}</span></legend>
       <div className="filter-options technology-filters">
-        {technologies.map((technology,index)=><Fragment key={technology.value}>
+        {technologies.filter(technology=>country.techs.includes(technology.value)).map((technology,index)=><Fragment key={technology.value}>
           <button type="button" className={`filter-option technology-filter ${filters.techs.includes(technology.value)?'is-selected':''}`} aria-label={`Technologia ${technology.generation} ${technology.label}`.trim()} aria-pressed={filters.techs.includes(technology.value)} onClick={()=>toggle('techs',technology.value)}>
             {technology.generation&&<span className="filter-generation" aria-hidden="true">{technology.generation}</span>}
             <span>{technology.label}</span>

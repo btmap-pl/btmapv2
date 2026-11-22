@@ -1052,3 +1052,25 @@
 .node-links-form input { width:120px; font-variant-numeric:tabular-nums; }
 .node-links-form .primary-button { min-height:36px; }
 .node-links-add { display:inline-flex; align-items:center; gap:6px; }
+
+/* Community cells in columns (like a NetMonster / BTSearch log). */
+.cell-table-field th,
+.cell-table-field td { white-space: nowrap; }
+.cell-table .cell-num { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.cell-table .cell-freq { color: var(--muted); font-size: 10px; font-family: inherit; }
+
+/* New cells glow green, changed ones yellow (last 30 days). */
+.cell-table tr.cell-row-new td { background: rgba(16, 185, 129, 0.09); }
+.cell-table tr.cell-row-new td:first-child { box-shadow: inset 3px 0 0 #10b981; }
+.cell-table tr.cell-row-modified td { background: rgba(234, 179, 8, 0.1); }
+.cell-table tr.cell-row-modified td:first-child { box-shadow: inset 3px 0 0 #eab308; }
+.cell-date-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cell-date-badge.is-new { color: #10b981; background: rgba(16, 185, 129, 0.16); border: 1px solid rgba(16, 185, 129, 0.35); }
+.cell-date-badge.is-modified { color: #ca8a04; background: rgba(234, 179, 8, 0.16); border: 1px solid rgba(234, 179, 8, 0.4); }

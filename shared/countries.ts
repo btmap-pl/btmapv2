@@ -21,6 +21,10 @@ export interface Country {
   /** Band filter values (MHz). */
   bands: string[];
   provinces: string[];
+  /** Technology filter values that have data there. */
+  techs: string[];
+  /** Map tools backed by Polish sources (SI2PEM, UKE radiolines, operator audit). */
+  features: { pem: boolean; radiolines: boolean; areaEvaluation: boolean };
 }
 
 export const ROMANIAN_OPERATORS: CountryOperator[] = [
@@ -39,6 +43,8 @@ export const COUNTRIES: Record<CountryCode, Country> = {
     registry: 'UKE',
     operators: OPERATORS.map(op => ({ name: op.name, color: op.color })),
     bands: ['420', '450', '700', '800', '900', '1800', '2100', '2600', '3500', '3600'],
+    techs: ['5G', 'LTE', 'UMTS', 'GSM', 'IOT', 'CDMA'],
+    features: { pem: true, radiolines: true, areaEvaluation: true },
     provinces: ['Dolnośląskie', 'Kujawsko-pomorskie', 'Lubelskie', 'Lubuskie', 'Łódzkie', 'Małopolskie', 'Mazowieckie', 'Opolskie', 'Podkarpackie', 'Podlaskie', 'Pomorskie', 'Śląskie', 'Świętokrzyskie', 'Warmińsko-mazurskie', 'Wielkopolskie', 'Zachodniopomorskie'],
   },
   RO: {
@@ -50,6 +56,8 @@ export const COUNTRIES: Record<CountryCode, Country> = {
     operators: [...ROMANIAN_OPERATORS, { name: 'Inne', color: '#788992' }],
     bands: ['700', '800', '900', '1800', '2100', '2600', '3500'],
     provinces: [],
+    techs: ['5G', 'LTE', 'UMTS', 'GSM'],
+    features: { pem: false, radiolines: false, areaEvaluation: false },
   },
 };
 
