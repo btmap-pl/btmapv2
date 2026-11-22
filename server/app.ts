@@ -169,7 +169,7 @@ export function createApp(
   app.get('/api/stats', (req, res) => {
     try {
       const source = typeof req.query.source === 'string' ? req.query.source : 'ALL';
-      const stats = getTelecomStats(db, source);
+      const stats = getTelecomStats(db, source, typeof req.query.country === 'string' ? req.query.country : 'PL');
       res.json(stats);
     } catch (e) {
       serverError(res, e, 'Błąd pobierania statystyk.');

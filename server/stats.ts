@@ -149,6 +149,7 @@ export interface StatsDataQuality {
 
 export interface TelecomStats {
   source: 'ALL' | 'BTMAP' | 'UKE';
+  country: 'PL' | 'RO';
   summary: {
     totalTowers: number;
     totalPermits: number;
@@ -204,6 +205,21 @@ function inferProvinceFromCoords(lat: number, lng: number): string {
     }
   }
   return best;
+}
+
+/** Romanian county (județ) from the code NetMonster users put first in a site name ("MM, Pietriș"). */
+const RO_COUNTIES: Record<string, string> = {
+  AB: 'Alba', AR: 'Arad', AG: 'Argeș', BC: 'Bacău', BH: 'Bihor', BN: 'Bistrița-Năsăud', BT: 'Botoșani',
+  BV: 'Brașov', BR: 'Brăila', B: 'București', BZ: 'Buzău', CS: 'Caraș-Severin', CL: 'Călărași', CJ: 'Cluj',
+  CT: 'Constanța', CV: 'Covasna', DB: 'Dâmbovița', DJ: 'Dolj', GL: 'Galați', GR: 'Giurgiu', GJ: 'Gorj',
+  HR: 'Harghita', HD: 'Hunedoara', IL: 'Ialomița', IS: 'Iași', IF: 'Ilfov', MM: 'Maramureș', MH: 'Mehedinți',
+  MS: 'Mureș', NT: 'Neamț', OT: 'Olt', PH: 'Prahova', SM: 'Satu Mare', SJ: 'Sălaj', SB: 'Sibiu', SV: 'Suceava',
+  TR: 'Teleorman', TM: 'Timiș', TL: 'Tulcea', VS: 'Vaslui', VL: 'Vâlcea', VN: 'Vrancea',
+};
+
+export function romanianCounty(address: string | null | undefined): string {
+  const code = String(address || '').trim().match(/^([A-Z]{1,2})\s*,/)?.[1];
+  return (code && RO_COUNTIES[code]) || 'Nieznany';
 }
 
 function classifyRadiolineBand(freqGhz: number): { band: string; rangeLabel: string; order: number } {
@@ -644,24 +660,27 @@ function buildGrowthTimeline(db: DatabaseSync, source: GrowthSource): StatsTimel
 }
 
 
-export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomStats {
-  const source = rawSource === 'BTMAP' ? 'BTMAP' : rawSource === 'UKE' ? 'UKE' : 'ALL';
-  const cached = cache.get(source);
+export function getTelecomStats(db: DatabaseSync, rawSource?: string, rawCountry?: string): TelecomStats {
+  // Romania has only community stations (no registry), so its view is always the whole set.
+  const country: 'PL' | 'RO' = rawCountry === 'RO' ? 'RO' : 'PL';
+  const source = country === 'RO' ? 'ALL' : rawSource === 'BTMAP' ? 'BTMAP' : rawSource === 'UKE' ? 'UKE' : 'ALL';
+  const cacheKey = `${country}:${source}`;
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
     return cached.data;
   }
 
   const allCounts = db.prepare(
-    "SELECT source, COUNT(*) as c FROM towers WHERE status='APPROVED' AND country='PL' GROUP BY source"
+    `SELECT source, COUNT(*) as c FROM towers WHERE status='APPROVED' AND country='${country}' GROUP BY source`
   ).all() as Array<{ source: string; c: number }>;
   const ukeTowersTotal = allCounts.find(r => r.source === 'UKE')?.c || 0;
   const btmapTowersTotal = allCounts.find(r => r.source === 'BTMAP')?.c || 0;
 
   const sql = source === 'ALL'
-    ? "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL'"
+    ? `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='${country}'`
     : source === 'UKE'
-    ? `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL' AND ${ukeViewSql('towers')}`
-    : "SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='PL' AND source=?";
+    ? `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='${country}' AND ${ukeViewSql('towers')}`
+    : `SELECT id, lat, lng, stationId, address, province, operators, source, createdAt FROM towers WHERE status='APPROVED' AND country='${country}' AND source=?`;
 
   type TowerRow = {
     id: string;
@@ -705,7 +724,7 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
     if (prov) {
       withExplicitProvince++;
     } else {
-      prov = inferProvinceFromCoords(row.lat, row.lng);
+      prov = country === 'RO' ? romanianCounty(row.address) : inferProvinceFromCoords(row.lat, row.lng);
       inferredProvince++;
     }
 
@@ -747,12 +766,15 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
       const cells = Array.isArray(op.cells) ? op.cells : [];
       const items = bands.length === 0 && cells.length > 0 ? cells : bands;
       for (const b of items) {
-        const bSectors = Number(b.sectors) || (Array.isArray(b.azimuths) && b.azimuths.length > 0 ? b.azimuths.length : 3);
+        // A community cell is one cell; a registry permit covers its sectors (3 when unknown).
+        const fieldCell = b.cellId != null || b.pci != null;
+        const bSectors = fieldCell ? 1 : Number(b.sectors) || (Array.isArray(b.azimuths) && b.azimuths.length > 0 ? b.azimuths.length : 3);
         totalCells += bSectors;
         totalPermits++;
         let tech = String(b.tech || 'Inne').toUpperCase();
         if (tech === 'NR') tech = '5G';
-        const bandNum = String(b.band || '').replace(/MHz/i, '').trim();
+        // Community cells are "1800 (b3)", the registry "1800": count both by MHz.
+        const bandNum = String(b.band || '').match(/\d{3,5}/)?.[0] ?? String(b.band || '').replace(/MHz/i, '').trim();
         const bandKey = `${tech} ${bandNum}`;
 
         if (tech === 'LTE' && bandNum) {
@@ -768,6 +790,7 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
         techPermits.set(tech, (techPermits.get(tech) || 0) + 1);
         opPermits.set(opName, (opPermits.get(opName) || 0) + 1);
 
+        if (!bandNum) continue;
         if (!bandTowerSets.has(bandKey)) bandTowerSets.set(bandKey, new Map());
         const bMap = bandTowerSets.get(bandKey)!;
         if (!bMap.has(opName)) bMap.set(opName, new Set());
@@ -879,20 +902,23 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
   ).get() as { withReports: number | null; sumReports: number | null } | undefined;
   const ukeDateRow = db.prepare("SELECT value FROM metadata WHERE key = 'ukeWykazDate'").get() as { value?: string } | undefined;
 
-  const timeline = buildGrowthTimeline(db, source);
+  // Growth is measured between UKE registry snapshots, which exist only for Poland.
+  const timeline = country === 'PL' ? buildGrowthTimeline(db, source) : [];
   const latestNewTowers = timeline[timeline.length - 1]?.totalNew ?? 0;
-  const latestNewDate = loadRegistrySnapshots(db, source, 1)[0]?.date || ukeDateRow?.value || null;
+  const latestNewDate = country === 'PL' ? loadRegistrySnapshots(db, source, 1)[0]?.date || ukeDateRow?.value || null : null;
 
   // Cached comparison between UKE and BTMAP bands
   let comparisonBands: StatsComparisonBandItem[];
-  if (cachedComparisonBands && Date.now() - cachedComparisonAt < CACHE_TTL_MS) {
+  if (country !== 'PL') {
+    comparisonBands = [];
+  } else if (cachedComparisonBands && Date.now() - cachedComparisonAt < CACHE_TTL_MS) {
     comparisonBands = cachedComparisonBands;
   } else {
     const ukeBandCounts = new Map<string, number>();
     const btmapBandCounts = new Map<string, number>();
 
     const allTowersWithSource = db.prepare(
-      "SELECT source, operators FROM towers WHERE status='APPROVED' AND country='PL'"
+      `SELECT source, operators FROM towers WHERE status='APPROVED' AND country='${country}'`
     ).all() as Array<{ source: string; operators: string }>;
 
     for (const t of allTowersWithSource) {
@@ -952,10 +978,11 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
     radiolinesUpdatedAt: radiolines.updatedAt,
   };
 
-  const monthlyReports = computeMonthlyReports(db, source);
+  const monthlyReports = country === 'PL' ? computeMonthlyReports(db, source) : [];
 
   const result: TelecomStats = {
     source,
+    country,
     summary: {
       totalTowers,
       totalPermits,
@@ -979,7 +1006,7 @@ export function getTelecomStats(db: DatabaseSync, rawSource?: string): TelecomSt
     updatedAt: new Date().toISOString(),
   };
 
-  cache.set(source, { at: Date.now(), data: result });
+  cache.set(cacheKey, { at: Date.now(), data: result });
   return result;
 }
 

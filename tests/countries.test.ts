@@ -77,3 +77,22 @@ test('channels map to BTMap band labels', () => {
   assert.equal(bandOfChannel('5G', 644160)?.label, '3500 (n78)');
   assert.equal(bandOfChannel('GSM', 982)?.label, '900');
 });
+
+test('statistics are kept per country', async () => {
+  const { getTelecomStats, romanianCounty } = await import('../server/stats.ts');
+  const { db } = seededDb();
+  db.prepare("INSERT INTO towers(id,stationId,address,province,lat,lng,operators,source,status) VALUES('pl1','P1','Warszawa','Mazowieckie',52.23,21.01,?,'UKE','APPROVED')")
+    .run(JSON.stringify([{ name: 'Play', bands: [{ tech: 'LTE', band: '1800' }] }]));
+  const ro = getTelecomStats(db, 'ALL', 'RO');
+  assert.equal(ro.country, 'RO');
+  assert.equal(ro.summary.totalTowers, 1);
+  assert.equal(ro.summary.totalCells, 2);
+  assert.deepEqual(ro.operators.map(o => o.name), ['Orange RO']);
+  assert.deepEqual(ro.bands.map(b => b.key).sort(), ['LTE 1800', 'LTE 800']);
+  assert.equal(ro.provinces[0].province, 'Maramureș');
+  const pl = getTelecomStats(db, 'ALL', 'PL');
+  assert.equal(pl.summary.totalTowers, 1);
+  assert.deepEqual(pl.operators.map(o => o.name), ['Play']);
+  assert.equal(romanianCounty('CJ, Cluj-Napoca'), 'Cluj');
+  assert.equal(romanianCounty('Satu bez kodu'), 'Nieznany');
+});

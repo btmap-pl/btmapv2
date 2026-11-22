@@ -9,6 +9,10 @@
 - **Wyszukiwarka**: prefiks `226 10` wskazuje Orange RO (`226 01` Vodafone, `226 03` Telekom, `226 05` Digi).
 - Rumuński regulator (ANCOM) nie publikuje wykazu stacji, więc w Rumunii są tylko dane społeczności.
 
+### Statystyki Rumunii
+- **Nowa sekcja „Rumunia”** w statystykach: liczba stacji i komórek, operatorzy RO w ich kolorach, technologie, pasma z podziałem na operatorów i stacje w każdym okręgu (județ, z kodu w nazwie stacji, np. „MM” → Maramureș). Statystyki Polski liczą tylko stacje w Polsce.
+- Komórki z bazy BTMap liczą się w statystykach jako pojedyncze komórki (a nie 3 sektory), a pasma „1800 (b3)” trafiają do „1800”.
+
 ### Komórki w karcie stacji
 - **Tabela jak w logu NetMonstera**: komórki z bazy BTMap w kolumnach Pasmo, Azymut, eNBID/gNBID, CLID, ECI/NCI, PCI, EARFCN (z częstotliwością MHz) i Notatki; w nagłówku technologii TAC/LAC.
 - **Nowe komórki na zielono, zmienione na żółto** przez 30 dni, z datą dodania lub zmiany. Daty zapisują się przy każdej zmianie stacji; nowe pozwolenia UKE też podświetlają się na zielono.

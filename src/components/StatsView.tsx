@@ -1,3 +1,4 @@
+import { ROMANIAN_OPERATORS } from '../../shared/countries';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import {
   Activity,
@@ -22,7 +23,7 @@ import { api, formatNumber } from '../lib/api';
 import { useI18n } from '../lib/i18n';
 import '../stats.css';
 
-export type StatsSection = 'uke' | 'radiolines' | 'btmap' | 'growth' | 'quality';
+export type StatsSection = 'uke' | 'radiolines' | 'btmap' | 'romania' | 'growth' | 'quality';
 
 interface StatsGrowthOperatorBar {
   operator: string;
@@ -229,15 +230,21 @@ interface Segment {
 }
 
 /** Sums counts per network operator in the fixed order, with every other licensee in one "Others" segment. */
-function operatorSegments(parts: Array<{ operator: string; count: number }>, othersLabel: string): Segment[] {
+/** Networks of another country, matched by exact name (Romania). */
+type Primaries = Array<{ name: string; color: string }>;
+const RO_PRIMARIES: Primaries = ROMANIAN_OPERATORS.map(op => ({ name: op.name, color: op.color }));
+
+function operatorSegments(parts: Array<{ operator: string; count: number }>, othersLabel: string, primaries?: Primaries): Segment[] {
   const sums = new Map<string, number>();
   const others = new Map<string, number>();
   for (const part of parts) {
-    const primary = primaryOperator(part.operator);
+    const primary = primaries ? (primaries.some(p => p.name === part.operator) ? part.operator : null) : primaryOperator(part.operator);
     if (primary) sums.set(primary, (sums.get(primary) || 0) + part.count);
     else if (part.count > 0) others.set(part.operator, (others.get(part.operator) || 0) + part.count);
   }
-  const segments: Segment[] = PRIMARY_OPS.map((op) => ({ key: op, label: op, value: sums.get(op) || 0, color: OP_COLORS[op] }));
+  const segments: Segment[] = primaries
+    ? primaries.map((op) => ({ key: op.name, label: op.name, value: sums.get(op.name) || 0, color: op.color }))
+    : PRIMARY_OPS.map((op) => ({ key: op, label: op, value: sums.get(op) || 0, color: OP_COLORS[op] }));
   const otherTotal = [...others.values()].reduce((a, b) => a + b, 0);
   if (otherTotal > 0) {
     segments.push({
@@ -299,10 +306,12 @@ export function StatsView({
   };
 
   const apiSource = activeSection === 'growth' ? growthSource : (activeSection === 'btmap' ? 'BTMAP' : 'UKE');
+  // Romania is its own data set (community stations only).
+  const apiKey: 'UKE' | 'BTMAP' | 'RO' = activeSection === 'romania' ? 'RO' : apiSource;
 
   const statsCacheRef = useRef<Record<string, TelecomStats>>({});
 
-  const fetchStats = useCallback((src: 'UKE' | 'BTMAP') => {
+  const fetchStats = useCallback((src: 'UKE' | 'BTMAP' | 'RO') => {
     if (statsCacheRef.current[src]) {
       setStats(statsCacheRef.current[src]);
       setLoading(false);
@@ -312,7 +321,7 @@ export function StatsView({
       setError('');
     }
 
-    api<TelecomStats>(`/stats?source=${src}`)
+    api<TelecomStats>(src === 'RO' ? '/stats?country=RO' : `/stats?source=${src}`)
       .then((data) => {
         statsCacheRef.current[src] = data;
         setStats(data);
@@ -328,7 +337,8 @@ export function StatsView({
   }, [isPl]);
 
   useEffect(() => {
-    fetchStats(apiSource);
+    fetchStats(apiKey);
+    if (apiKey === 'RO') return;
     const otherSource: 'UKE' | 'BTMAP' = apiSource === 'UKE' ? 'BTMAP' : 'UKE';
     if (!statsCacheRef.current[otherSource]) {
       api<TelecomStats>(`/stats?source=${otherSource}`)
@@ -337,7 +347,7 @@ export function StatsView({
         })
         .catch(() => {});
     }
-  }, [apiSource, fetchStats]);
+  }, [apiKey, apiSource, fetchStats]);
 
   const othersLabel = isPl ? 'Pozostali' : 'Others';
 
@@ -749,7 +759,7 @@ export function StatsView({
     );
   };
 
-  const legendSegments = operatorSegments([], othersLabel).concat([{ key: '__others', label: othersLabel, value: 0, color: OTHERS_COLOR }]);
+  const legendSegments = operatorSegments([], othersLabel, activeSection === 'romania' ? RO_PRIMARIES : undefined).concat([{ key: '__others', label: othersLabel, value: 0, color: OTHERS_COLOR }]);
 
   const segmentedControl = <T extends string>(value: T, options: Array<{ value: T; label: string }>, onChange: (next: T) => void, label: string) => (
     <div className="gr-segmented st-filter" role="group" aria-label={label}>
@@ -765,6 +775,7 @@ export function StatsView({
     uke: { pl: 'Rejestr UKE', en: 'UKE registry' },
     radiolines: { pl: 'Radiolinie UKE', en: 'UKE radio links' },
     btmap: { pl: 'Baza BTMap', en: 'BTMap database' },
+    romania: { pl: 'Rumunia', en: 'Romania' },
     quality: { pl: 'Jakość danych', en: 'Data quality' },
   };
   const section = activeSection as Exclude<StatsSection, 'growth'>;
@@ -776,13 +787,16 @@ export function StatsView({
       ? dq?.radiolinesUpdatedAt ? (isPl ? `Pozwolenia na linie radiowe · aktualizacja ${dq.radiolinesUpdatedAt.slice(0, 10)}` : `Radio link permits · updated ${dq.radiolinesUpdatedAt.slice(0, 10)}`) : (isPl ? 'Pozwolenia na linie radiowe' : 'Radio link permits')
       : section === 'btmap'
       ? (isPl ? 'Stacje zgłoszone i zweryfikowane przez społeczność' : 'Stations submitted and verified by the community')
+      : section === 'romania'
+      ? (isPl ? 'Stacje społeczności (NetMonster i zgłoszenia) · ANCOM nie publikuje wykazu stacji' : 'Community stations (NetMonster and submissions) · ANCOM publishes no station registry')
       : (isPl ? 'Kompletność danych i stan źródeł' : 'Completeness and source status');
 
   // ---------------------------------------------------------------------------
   // Registry / BTMap view
   // ---------------------------------------------------------------------------
   const renderStations = (s: TelecomStats) => {
-    const isBtmap = section === 'btmap';
+    const isBtmap = section === 'btmap' || section === 'romania';
+    const primaries = section === 'romania' ? RO_PRIMARIES : undefined;
     const total = s.summary.totalTowers;
     if (isBtmap && total === 0) {
       return (
@@ -797,16 +811,18 @@ export function StatsView({
       );
     }
     const nr = s.technologies.find((t) => t.tech === '5G');
-    const opSegments = operatorSegments(s.operators.map((o) => ({ operator: o.name, count: o.towers })), othersLabel).filter((x) => x.value > 0);
+    const opSegments = operatorSegments(s.operators.map((o) => ({ operator: o.name, count: o.towers })), othersLabel, primaries).filter((x) => x.value > 0);
     const techNames: Record<string, string> = { '5G': '5G NR', LTE: 'LTE', UMTS: 'UMTS', GSM: 'GSM', 'GSM-R': 'GSM-R', IOT: 'IoT', CDMA: 'CDMA' };
     const unitStations = isPl ? 'stacji' : 'sites';
     const bandTech = (tech: string) => (tech === '5G' ? 'NR' : tech);
     return (
       <>
         <div className="st-tiles">
-          {tile(isBtmap ? (isPl ? 'Stacje w bazie' : 'Stations') : (isPl ? 'Lokalizacje w rejestrze' : 'Registry locations'), formatNumber(total), isBtmap ? (isPl ? 'zatwierdzone stacje BTMap' : 'approved BTMap stations') : (isPl ? 'unikalne lokalizacje stacji' : 'unique station locations'), <RadioTower size={16} />)}
+          {tile(isBtmap ? (isPl ? 'Stacje w bazie' : 'Stations') : (isPl ? 'Lokalizacje w rejestrze' : 'Registry locations'), formatNumber(total), isBtmap ? (section === 'romania' ? (isPl ? 'stacje społeczności w Rumunii' : 'community stations in Romania') : isPl ? 'zatwierdzone stacje BTMap' : 'approved BTMap stations') : (isPl ? 'unikalne lokalizacje stacji' : 'unique station locations'), <RadioTower size={16} />)}
           {isBtmap
-            ? tile(isPl ? 'Sektory' : 'Sectors', formatNumber(s.summary.totalCells), isPl ? 'z danymi komórek' : 'with cell data', <Layers size={16} />)
+            ? section === 'romania'
+              ? tile(isPl ? 'Komórki' : 'Cells', formatNumber(s.summary.totalCells), total > 0 ? (isPl ? `średnio ${percentFormat.format(s.summary.totalCells / total)} na stację` : `${percentFormat.format(s.summary.totalCells / total)} per site on average`) : undefined, <Layers size={16} />)
+              : tile(isPl ? 'Sektory' : 'Sectors', formatNumber(s.summary.totalCells), isPl ? 'z danymi komórek' : 'with cell data', <Layers size={16} />)
             : tile(isPl ? 'Pozwolenia radiowe' : 'Radio permits', formatNumber(s.summary.totalPermits), total > 0 ? (isPl ? `średnio ${percentFormat.format(s.summary.totalPermits / total)} na lokalizację` : `${percentFormat.format(s.summary.totalPermits / total)} per location on average`) : undefined, <Layers size={16} />)}
           {tile(isPl ? 'Stacje 5G NR' : '5G NR sites', formatNumber(nr?.towers ?? 0), isPl ? `${formatPct(share(nr?.towers ?? 0, total))} wszystkich stacji` : `${formatPct(share(nr?.towers ?? 0, total))} of all sites`, <Signal size={16} />)}
           {tile(isPl ? 'Stacje 5G C-Band' : '5G C-Band sites', formatNumber(s.dataQuality.fiveGCBandTowers), isPl ? `pasmo n78 · ${formatPct(share(s.dataQuality.fiveGCBandTowers, total))} stacji` : `n78 · ${formatPct(share(s.dataQuality.fiveGCBandTowers, total))} of sites`, <Zap size={16} />)}
@@ -846,7 +862,7 @@ export function StatsView({
                       </>
                     ),
                     total: b.total,
-                    segments: operatorSegments(b.operators, othersLabel),
+                    segments: operatorSegments(b.operators, othersLabel, primaries),
                   })),
                   unitStations
                 )
@@ -872,12 +888,14 @@ export function StatsView({
             }
           )}
           {card(
-            isPl ? 'Województwa' : 'Provinces',
-            isPl ? 'Stacje w każdym województwie, z podziałem na operatorów' : 'Sites per province, split by operator',
+            section === 'romania' ? (isPl ? 'Okręgi (județe)' : 'Counties (județe)') : (isPl ? 'Województwa' : 'Provinces'),
+            section === 'romania'
+              ? (isPl ? 'Stacje w każdym okręgu (z kodu w nazwie stacji), z podziałem na operatorów' : 'Sites per county (from the code in the site name), split by operator')
+              : (isPl ? 'Stacje w każdym województwie, z podziałem na operatorów' : 'Sites per province, split by operator'),
             <>
               {legend(legendSegments)}
               {stacked(
-                s.provinces.filter((p) => p.total > 0).map((p) => ({ key: p.province, name: p.province, label: <span>{p.province}</span>, total: p.total, segments: operatorSegments(p.operators, othersLabel) })),
+                s.provinces.filter((p) => p.total > 0).map((p) => ({ key: p.province, name: p.province, label: <span>{p.province}</span>, total: p.total, segments: operatorSegments(p.operators, othersLabel, primaries) })),
                 unitStations
               )}
             </>,
@@ -1058,11 +1076,15 @@ export function StatsView({
         </div>
       ) : stats ? (
         <>
-          {(section === 'uke' || section === 'btmap') && renderStations(stats)}
+          {(section === 'uke' || section === 'btmap' || section === 'romania') && renderStations(stats)}
           {section === 'radiolines' && renderRadiolines(stats)}
           {section === 'quality' && renderQuality(stats)}
           <p className="st-footnote">
-            {isPl
+            {section === 'romania'
+              ? (isPl
+                ? `Dane z bazy aplikacji: ${formatNumber(stats.summary.totalTowers)} stacji w Rumunii, ${formatNumber(stats.summary.totalPermits)} komórek z logów NetMonstera i zgłoszeń użytkowników.`
+                : `From the app database: ${formatNumber(stats.summary.totalTowers)} stations in Romania, ${formatNumber(stats.summary.totalPermits)} cells from NetMonster logs and user submissions.`)
+              : isPl
               ? `Dane z bazy aplikacji: ${formatNumber(stats.summary.ukeTowers)} lokalizacji UKE (${formatNumber(stats.summary.totalPermits)} pozwoleń), ${formatNumber(stats.radiolines.totalLinks)} linii radiowych i ${formatNumber(stats.summary.btmapTowers)} stacji BTMap.`
               : `From the app database: ${formatNumber(stats.summary.ukeTowers)} UKE locations (${formatNumber(stats.summary.totalPermits)} permits), ${formatNumber(stats.radiolines.totalLinks)} radio links and ${formatNumber(stats.summary.btmapTowers)} BTMap stations.`}
           </p>
