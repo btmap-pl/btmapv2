@@ -326,7 +326,8 @@ export default function App(){
             theme={theme}
             basemap={basemap}
             onBasemapError={basemapError}
-            items={result.items}
+            // The coverage map shows measured coverage only; stations would cover it.
+            items={showCoverage ? [] : result.items}
             selected={selected}
             onSelect={selectTower}
             onBounds={boundsChanged}
@@ -384,7 +385,7 @@ export default function App(){
               <button type="button" className="ae-pick-cancel" onClick={handleCancelEvalPick}>{t.cancel}</button>
             </div>
           )}
-          <div className="map-hud"><button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{!country.registry||filters.source==='BTMAP'?'BTMap':filters.source==='UKE'?'UKE':'BTMap + UKE'}</span><List size={16}/></button><div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
+          <div className="map-hud">{!showCoverage&&<button className="map-summary" aria-label={t.stationsInArea} aria-expanded={panel==='stations'} onClick={()=>togglePanel('stations')}><Radio size={17}/><strong>{loading?'…':formatNumber(Math.min(result.total, 1000))}</strong><span>{t.locationsCount}</span><span className="hud-divider"/><span className="hud-source">{!country.registry||filters.source==='BTMAP'?'BTMap':filters.source==='UKE'?'UKE':'BTMap + UKE'}</span><List size={16}/></button>}<div className="map-coordinates">{bounds?<><span>{t.mapCenter}</span>{formatCoordinates((bounds.minLat+bounds.maxLat)/2, (bounds.minLng+bounds.maxLng)/2, settings.coordFormat)}<span className="coordinate-zoom">Z{bounds.zoom}</span></>:t.mapLoading}</div></div>
           <div className={`map-searchbar ${isSearchActive ? 'search-active' : ''}`}>
             <Search
               getCenter={getMapCenter}
